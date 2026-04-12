@@ -1,0 +1,14 @@
+venv-ardupilot/
+.venv/
+mavproxy-env
+build/
+devel/
+install/
+log/
+
+__pycache__/
+*.pyc
+
+.vscode/
+.project
+.cproject

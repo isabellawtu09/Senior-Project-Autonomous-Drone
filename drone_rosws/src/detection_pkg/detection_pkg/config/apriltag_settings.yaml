@@ -1,0 +1,10 @@
+apriltag:
+  ros__parameters:
+    image_transport: "raw"
+    family: "36h11"
+    size: 0.5
+    max_hamming: 0
+
+    tag:
+      ids: [0,1,2]
+      frames: ["target_0", "target_1", "target_2"]
