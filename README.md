@@ -1,13 +1,13 @@
 ## Senior Project Autonomous Drone 
 ### Note:
 * User should have ardupilot installed prior to cloning this repository
-* Ensure that paths match your own local setup eg:
+* Ensure that paths match your own local setup eg for `worlds` , `models`, and sometimes even `textures` of the models:
   `export GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH:/home/joanna/seniorproject_repo/ardupilot_gazebo/models`
   then,
   `source ~./bashrc `
 * Also, ensure that you have sourced your ROS2 installation
 * Necessary virtual environments have been created for mavproxy, the yolo and udp relay node within the `yolo_detector` package
-* 
+
 
 ### Current Interface Setup Involves the following:
 
