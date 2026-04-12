@@ -1,6 +1,13 @@
 ## Senior Project Autonomous Drone 
 ### Note:
-User should have ardupilot installed prior to cloning this repository
+* User should have ardupilot installed prior to cloning this repository
+* Ensure that paths match your own local setup eg:
+  `export GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH:/home/joanna/seniorproject_repo/ardupilot_gazebo/models`
+  then,
+  `source ~./bashrc `
+* Also, ensure that you have sourced your ROS2 installation
+* Necessary virtual environments have been created for mavproxy, the yolo and udp relay node within the `yolo_detector` package
+* 
 
 ### Current Interface Setup Involves the following:
 
@@ -26,7 +33,7 @@ g/CameraInfo[gz.msgs.CameraInfo"`
 
 Ran in this directory
 
-`srproject_repo/sim/apriltag_ws/src/yolo_detector/yolo_detector`
+`srproject_repo/sim/drone_rosws/src/yolo_detector/yolo_detector`
 
 Command:
 
@@ -47,4 +54,6 @@ activate `.venv`
 Command:
 
 `ros2 run yolo_detector udp_relay`
+or
+`python3 src/yolo_detector/yolo_detector/udp_relay.py` from `drone_rosws`
 
