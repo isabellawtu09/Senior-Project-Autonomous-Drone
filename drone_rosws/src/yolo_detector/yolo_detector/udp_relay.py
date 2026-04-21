@@ -19,6 +19,7 @@ class UdpRelay(Node):
         self.DISCOVERY_PORT = 8499
         self.VIDEO_PORT = 8500
         self.TRACK_PORT = 8501
+        self.COMMAND_PORT = 8502
         self.MAX_UDP = 8000
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -27,6 +28,8 @@ class UdpRelay(Node):
 
         # 2. Start the Command Thread
         threading.Thread(target=self.listen_for_ui_commands, daemon=True).start()
+
+        threading.Thread(target=self.listen_for_mission_commands, daemon=True).start()
 
         self.target_pub = self.create_publisher(String, '/target_object', 10)
         # self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
@@ -52,6 +55,25 @@ class UdpRelay(Node):
             
             import time
             time.sleep(1.0) # Shout once a second
+
+    def listen_for_mission_commands(self):
+        import subprocess
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("0.0.0.0", self.COMMAND_PORT))
+        self.get_logger().info(f"Listening for mission commands on port {self.COMMAND_PORT}...")
+        while rclpy.ok():
+            data, _ = sock.recvfrom(1024)
+            cmd = data.strip()
+            if cmd == b"START_BOUSTROPHEDON":
+                self.get_logger().info("Received START_BOUSTROPHEDON — launching mission...")
+                subprocess.Popen(
+                    "source /opt/ros/jazzy/setup.bash && ros2 run <package_name> <node_executable>",
+                    shell=True,
+                    executable="/bin/bash"
+                )
+            else:
+                self.get_logger().warn(f"Unknown command received: {cmd}")
+ 
 
     def listen_for_ui_commands(self):
         cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

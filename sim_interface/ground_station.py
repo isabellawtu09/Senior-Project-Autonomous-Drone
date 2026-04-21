@@ -123,6 +123,12 @@ class GroundStation(QWidget):
         self.stop_button.clicked.connect(self.stop_tracking)
         ctrl_layout.addWidget(self.stop_button, stretch=1)
 
+        self.mission_button = QPushButton("START MISSION")
+        self.mission_button.setObjectName("start")
+        self.mission_button.setFixedHeight(45)
+        self.mission_button.clicked.connect(self.start_mission)
+        ctrl_layout.addWidget(self.mission_button, stretch=1)
+
         layout.addLayout(ctrl_layout)
         
         self.log_console = QTextEdit()
@@ -183,6 +189,16 @@ class GroundStation(QWidget):
             self.status_label.setStyleSheet("color: #a6e3a1; background-color: #313244;")
         except Exception as e:
             self.append_log(f"[ERROR] Failed to send: {e}")
+
+    def start_mission(self):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.sendto(b"START_BOUSTROPHEDON", (drone_ip, COMMANDPORT))
+            sock.close()
+            self.append_log("[COMMAND] Boustrophedon mission started.")
+            self.status_label.setText("STATUS: MISSION RUNNING")
+        except Exception as e:
+            self.append_log(f"[ERROR] Failed to send mission command: {e}")
 
     def stop_tracking(self):
         try:
