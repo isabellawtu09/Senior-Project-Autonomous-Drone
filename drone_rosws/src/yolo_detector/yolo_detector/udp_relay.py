@@ -13,7 +13,9 @@ class UdpRelay(Node):
         self.bridge = CvBridge()
         
         # Ports must match Ground Station
-        self.UI_IP = "127.0.0.1" 
+        # self.UI_IP = "127.0.0.1" 
+        self.UI_IP = "172.20.10.2"
+        
         self.DISCOVERY_PORT = 8499
         self.VIDEO_PORT = 8500
         self.TRACK_PORT = 8501
@@ -27,7 +29,8 @@ class UdpRelay(Node):
         threading.Thread(target=self.listen_for_ui_commands, daemon=True).start()
 
         self.target_pub = self.create_publisher(String, '/target_object', 10)
-        self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
+        # self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
+        self.create_subscription(Image, '/world/iris_objects_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image', self.send_to_ui_callback, 5)
         
         self.get_logger().info("UDP Relay started. Shouting for Ground Station...")
 
