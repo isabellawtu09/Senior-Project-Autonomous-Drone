@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 import socket
 import cv2
 import threading
@@ -32,6 +32,7 @@ class UdpRelay(Node):
         threading.Thread(target=self.listen_for_mission_commands, daemon=True).start()
 
         self.target_pub = self.create_publisher(String, '/target_object', 10)
+        self.tracking_pub = self.create_publisher(Bool, '/tracking_active', 10)
         # self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
         self.create_subscription(Image, '/world/iris_objects_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image', self.send_to_ui_callback, 5)
         
@@ -60,21 +61,27 @@ class UdpRelay(Node):
         import subprocess
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("0.0.0.0", self.COMMAND_PORT))
-        self.get_logger().info(f"Listening for mission commands on port {self.COMMAND_PORT}...")
+        self.mission_process = None
+        self.tracking_started = False  # ← add this flag
+
         while rclpy.ok():
             data, _ = sock.recvfrom(1024)
             cmd = data.strip()
-            if cmd == b"START_BOUSTROPHEDON":
-                self.get_logger().info("Received START_BOUSTROPHEDON — launching mission...")
-                subprocess.Popen(
-                    "source /opt/ros/jazzy/setup.bash && ros2 run <package_name> <node_executable>",
+            if cmd == b"TRACKING":
+                if not self.tracking_started:
+                    self.get_logger().info("Launching lawnmower...")
+                    self.tracking_started = True
+                    self.mission_process = subprocess.Popen(
+                    "source /home/$USER/src/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash && ros2 run lawnmower lawnmower",
                     shell=True,
                     executable="/bin/bash"
                 )
-            else:
-                self.get_logger().warn(f"Unknown command received: {cmd}")
- 
-
+            elif cmd == b"IDLE":
+                self.tracking_started = False
+                if self.mission_process and self.mission_process.poll() is None:
+                    self.mission_process.terminate()
+                    self.mission_process = None
+                    
     def listen_for_ui_commands(self):
         cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         cmd_sock.bind(("0.0.0.0", self.TRACK_PORT))
