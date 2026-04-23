@@ -200,6 +200,9 @@ class BoustrophedonNode(Node):
         start = time.time()
 
         while True:
+            if self.tracking_active:
+                return
+            
             sp.header.stamp = self.get_clock().now().to_msg()
             self.setpoint_pub.publish(sp)
             rclpy.spin_once(self, timeout_sec=rate_sec)
@@ -238,14 +241,21 @@ class BoustrophedonNode(Node):
         for i, (x, y, z) in enumerate(waypoints):
             self.get_logger().info(f'[{i+1}/{len(waypoints)}]')
             self._go_to(x, y, z)
+            if self.tracking_active:
+                break
 
-        # Return to launch
-        self.get_logger().info('Pattern complete. Returning to launch...')
-        self._go_to(0.0, 0.0, CRUISE_ALT)
-        self._set_mode('RTL')
-
-        self.get_logger().info('RTL initiated. Done.')
-
+        if self.tracking_active:
+            self.get_logger().info('Object found. Holding position...')
+            p = self.current_pose.pose.position
+            while rclpy.ok():
+                sp = self._make_setpoint(p.x, p.y, p.z)
+                self.setpoint_pub.publish(sp)
+                rclpy.spin_once(self, timeout_sec=0.05)
+        else:
+            self.get_logger().info('Pattern complete. Returning to launch...')
+            self._go_to(0.0, 0.0, CRUISE_ALT)
+            self._set_mode('RTL')
+            self.get_logger().info('RTL initiated. Done.')
 
 def main():
     rclpy.init()
