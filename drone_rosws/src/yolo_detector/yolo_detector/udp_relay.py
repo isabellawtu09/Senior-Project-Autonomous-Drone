@@ -32,7 +32,7 @@ class UdpRelay(Node):
         threading.Thread(target=self.listen_for_mission_commands, daemon=True).start()
 
         self.target_pub = self.create_publisher(String, '/target_object', 10)
-        self.tracking_pub = self.create_publisher(Bool, '/tracking_active', 10)
+        self.tracking_pub = self.create_publisher(Bool, '/object_found', 10)
         # self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
         self.create_subscription(Image, '/world/iris_objects_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image', self.send_to_ui_callback, 5)
         
@@ -76,6 +76,11 @@ class UdpRelay(Node):
                     shell=True,
                     executable="/bin/bash"
                 )
+            elif cmd == b"FOUND":
+                self.get_logger().info("Object found! Publishing tracking active.")
+                msg = Bool()
+                msg.data = True
+                self.tracking_pub.publish(msg)    
             elif cmd == b"IDLE":
                 self.tracking_started = False
                 if self.mission_process and self.mission_process.poll() is None:

@@ -22,6 +22,7 @@ from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from geometry_msgs.msg import PoseStamped
 from geographic_msgs.msg import GeoPointStamped
+from std_msgs.msg import Bool
 
 import time
 import math
@@ -69,9 +70,11 @@ class BoustrophedonNode(Node):
 
         self.state = State()
         self.current_pose = PoseStamped()
+        self.tracking_active = False
 
         self.create_subscription(State, '/mavros/state', self._state_cb, qos)
         self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._pose_cb, qos)
+        self.create_subscription(Bool, '/object_found', self._tracking_cb, 10)
 
         self.setpoint_pub = self.create_publisher(PoseStamped, '/mavros/setpoint_position/local', 10)
 
@@ -98,6 +101,11 @@ class BoustrophedonNode(Node):
         sp.pose.position.z = z
         sp.pose.orientation.w = 1.0
         return sp
+    
+    def _tracking_cb(self, msg):
+        self.tracking_active = msg.data
+        if self.tracking_active:
+            self.get_logger().info('Object found! Stopping pattern.')
 
     def _distance_to(self, x, y, z):
         p = self.current_pose.pose.position
