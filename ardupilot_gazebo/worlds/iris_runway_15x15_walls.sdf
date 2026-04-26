@@ -109,7 +109,89 @@
         </sensor>
       </link>
     </model>
-    
+    <!-- including the object models i downloaded -->
+
+        <include>
+      <name>VisitorKidSit</name>
+      <uri>model://VisitorKidSit</uri>
+      <pose>-5.2 3.1 0 0 0 1.57</pose> 
+      <static>true</static>
+    </include>
+
+    <include>
+      <name>SANDWICH_MEAL</name>
+      <uri>model://SANDWICH_MEAL</uri>
+      <pose>2.5 -4.8 0 0 0 0</pose>
+      <scale>5.0 5.0 5.0</scale> 
+      <static>true</static>
+    </include>
+
+
+    <!-- cant see mesh -->
+
+    <include>
+      <name>MaleVisitorOnPhone</name>
+      <uri>model://MaleVisitorOnPhone</uri>
+      <pose>-1.5 -6.2 0 0 0 -0.8</pose> 
+      <static>true</static>
+    </include>
+
+    <include>
+      <name>Strawberry</name>
+      <uri>model://Strawberry</uri>
+      <pose>6.0 5.5 0 0 0 0</pose>
+      <scale>10.0 10.0 10.0</scale> 
+      <static>true</static>
+    </include>
+
+    <include>
+      <name>Casual female</name>
+      <uri>model://Casual female</uri>
+      <pose>4.2 -1.5 0 0 0 2.1</pose> 
+      <static>true</static>
+    </include>
+
+   <include>
+    <name>coke_can</name>
+    <uri>model://coke_can</uri>
+    <pose>-3.5 5.2 -0.91 0 0 0</pose> 
+    <static>true</static>
+  </include>
+
+
+
+    <include>
+      <name>movable_coke_can_green</name>
+      <uri>model://movable_coke_can_green</uri>
+      <pose>5.8 -3.5 0 0 0 1.1</pose> 
+      <static>true</static>
+    </include>
+
+    <!-- cant see texture of lunch boxes  -->
+    <include>
+      <name>US_Army_Stash_Lunch_Bag</name>
+      <uri>model://US_Army_Stash_Lunch_Bag</uri>
+      <pose>-6.0 -2.0 0 0 0 -1.57</pose> 
+      <static>true</static>
+    </include>
+
+    <include>
+      <name>Olive_Kids_Dinousar_Land_Lunch_Box</name>
+      <uri>model://Olive_Kids_Dinosaur_Land_Lunch_Box</uri>
+      <pose>0.5 6.5 0 0 0 0.5</pose> 
+      <static>true</static>
+    </include>
+
+    <include>
+      <name>Olive_Kids_Butterfly_Garden_Munch_n_Lunch_Bag</name>
+      <uri>model://Olive_Kids_Butterfly_Garden_Munch_n_Lunch_Bag</uri>
+      <pose>-4.0 -5.5 0 0 0 0.8</pose> 
+      <static>true</static>
+    </include>
+
+
+
+
     <include>
       <uri>model://runway</uri>
       <pose degrees="true">-29 545 0 0 0 363</pose>
