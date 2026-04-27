@@ -1,0 +1,39 @@
+model {
+  file: "model.sdf"
+}
+name: "US_Army_Stash_Lunch_Bag"
+description: "U.S. Army Stash Lunch Bag"
+version: 1
+authors {
+  name: "Google"
+  email: "scanned-objects@google.com"
+}
+legal {
+  copyright: "Copyright 2020 Google LLC."
+  license: "Creative Commons Attribution 4.0 International"
+}
+annotations {
+  key: "brand"
+  value: "Wildkin"
+}
+annotations {
+  key: "gtin"
+  value: "097277554015"
+}
+annotations {
+  key: "mpn"
+  value: "55401"
+}
+annotations {
+  key: "sku"
+  value: "55401"
+}
+compatibilities {
+  name: "Gazebo"
+  version {
+    major: 11
+  }
+}
+categories {
+  first: "Bag"
+}

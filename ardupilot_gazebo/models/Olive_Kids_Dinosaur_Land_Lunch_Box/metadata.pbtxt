@@ -1,0 +1,39 @@
+model {
+  file: "model.sdf"
+}
+name: "Olive_Kids_Dinosaur_Land_Lunch_Box"
+description: "Olive Kids Dinosaur Land Lunch Box"
+version: 1
+authors {
+  name: "Google"
+  email: "scanned-objects@google.com"
+}
+legal {
+  copyright: "Copyright 2020 Google LLC."
+  license: "Creative Commons Attribution 4.0 International"
+}
+annotations {
+  key: "brand"
+  value: "Wildkin"
+}
+annotations {
+  key: "gtin"
+  value: "097277334082"
+}
+annotations {
+  key: "mpn"
+  value: "33408"
+}
+annotations {
+  key: "sku"
+  value: "33408"
+}
+compatibilities {
+  name: "Gazebo"
+  version {
+    major: 11
+  }
+}
+categories {
+  first: "Bag"
+}

@@ -27,6 +27,8 @@
                 <geometry>
                     <mesh>
                         <uri>model://movable_coke_can_green/meshes/coke_can.obj</uri>
+                        <scale>8.0 8.0 8.0</scale>
+                        
                         <scale>1 1 1</scale>
                     </mesh>
                 </geometry>
