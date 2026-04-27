@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 import socket
 import cv2
 import threading
@@ -13,10 +13,13 @@ class UdpRelay(Node):
         self.bridge = CvBridge()
         
         # Ports must match Ground Station
-        self.UI_IP = "127.0.0.1" 
+        # self.UI_IP = "127.0.0.1" 
+        self.UI_IP = "172.20.10.2"
+        
         self.DISCOVERY_PORT = 8499
         self.VIDEO_PORT = 8500
         self.TRACK_PORT = 8501
+        self.COMMAND_PORT = 8502
         self.MAX_UDP = 8000
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -26,8 +29,12 @@ class UdpRelay(Node):
         # 2. Start the Command Thread
         threading.Thread(target=self.listen_for_ui_commands, daemon=True).start()
 
+        threading.Thread(target=self.listen_for_mission_commands, daemon=True).start()
+
         self.target_pub = self.create_publisher(String, '/target_object', 10)
-        self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
+        self.tracking_pub = self.create_publisher(Bool, '/object_found', 10)
+        # self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
+        self.create_subscription(Image, '/world/iris_objects_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image', self.send_to_ui_callback, 5)
         
         self.get_logger().info("UDP Relay started. Shouting for Ground Station...")
 
@@ -50,6 +57,36 @@ class UdpRelay(Node):
             import time
             time.sleep(1.0) # Shout once a second
 
+    def listen_for_mission_commands(self):
+        import subprocess
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("0.0.0.0", self.COMMAND_PORT))
+        self.mission_process = None
+        self.tracking_started = False  # ← add this flag
+
+        while rclpy.ok():
+            data, _ = sock.recvfrom(1024)
+            cmd = data.strip()
+            if cmd == b"TRACKING":
+                if not self.tracking_started:
+                    self.get_logger().info("Launching lawnmower...")
+                    self.tracking_started = True
+                    self.mission_process = subprocess.Popen(
+                    "source /home/$USER/src/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash && ros2 run lawnmower lawnmower",
+                    shell=True,
+                    executable="/bin/bash"
+                )
+            elif cmd == b"FOUND":
+                self.get_logger().info("Object found! Publishing tracking active.")
+                msg = Bool()
+                msg.data = True
+                self.tracking_pub.publish(msg)    
+            elif cmd == b"IDLE":
+                self.tracking_started = False
+                if self.mission_process and self.mission_process.poll() is None:
+                    self.mission_process.terminate()
+                    self.mission_process = None
+                    
     def listen_for_ui_commands(self):
         cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         cmd_sock.bind(("0.0.0.0", self.TRACK_PORT))
