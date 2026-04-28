@@ -73,6 +73,10 @@ class BoustrophedonNode(Node):
         self.state = State()
         self.current_pose = PoseStamped()
         self.tracking_active = False
+        self.home_captured = False
+        self.home_x = 0.0
+        self.home_y = 0.0
+        self.home_z = 0.0
 
         self.create_subscription(State, '/mavros/state', self._state_cb, qos)
         self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._pose_cb, qos)
@@ -112,6 +116,9 @@ class BoustrophedonNode(Node):
     def _distance_to(self, x, y, z):
         p = self.current_pose.pose.position
         return math.sqrt((p.x - x)**2 + (p.y - y)**2 + (p.z - z)**2)
+
+    def _altitude_error(self, target_z):
+        return abs(self.current_pose.pose.position.z - target_z)
 
     def _spin_for(self, seconds):
         end = time.time() + seconds
@@ -155,6 +162,17 @@ class BoustrophedonNode(Node):
                 self._set_gp_origin()
             if time.time() - start > timeout:
                 raise RuntimeError('Timed out waiting for position estimate')
+
+    def _capture_home_position(self):
+        """Capture the drone's current local pose as mission home."""
+        p = self.current_pose.pose.position
+        self.home_x = float(p.x)
+        self.home_y = float(p.y)
+        self.home_z = float(p.z)
+        self.home_captured = True
+        self.get_logger().info(
+            f'Home captured at x={self.home_x:.2f}, y={self.home_y:.2f}, z={self.home_z:.2f}'
+        )
 
 
     def _set_mode(self, mode, retries=5):
@@ -222,6 +240,8 @@ class BoustrophedonNode(Node):
         self._wait_connected()
         self._set_gp_origin()
         self._wait_for_position_estimate()
+        if not self.home_captured:
+            self._capture_home_position()
         self._set_mode('GUIDED')
         time.sleep(1.0)
         self._arm()
@@ -229,7 +249,7 @@ class BoustrophedonNode(Node):
 
         if self.return_home_only:
             self.get_logger().info('Return-home mode active. Going to origin.')
-            self._go_to(0.0, 0.0, CRUISE_ALT, timeout=60)
+            self._go_to(self.home_x, self.home_y, CRUISE_ALT, timeout=60)
             self.get_logger().info('Return-home complete.')
             return
 
@@ -237,8 +257,12 @@ class BoustrophedonNode(Node):
 
         # Wait to reach takeoff altitude
         self.get_logger().info('Waiting to reach takeoff altitude...')
-        while self._distance_to(0.0, 0.0, TAKEOFF_ALT) > 0.5:
+        takeoff_wait_start = time.time()
+        while self._altitude_error(TAKEOFF_ALT) > 0.4:
             rclpy.spin_once(self, timeout_sec=0.2)
+            if time.time() - takeoff_wait_start > 25.0:
+                self.get_logger().warn('Timed out waiting for takeoff altitude; continuing.')
+                break
 
         # Generate and fly pattern
         waypoints = generate_boustrophedon(AREA_WIDTH, AREA_HEIGHT, LANE_SPACING, CRUISE_ALT)
@@ -262,7 +286,7 @@ class BoustrophedonNode(Node):
                 rclpy.spin_once(self, timeout_sec=0.05)
         else:
             self.get_logger().info('Pattern complete. Returning to launch...')
-            self._go_to(0.0, 0.0, CRUISE_ALT)
+            self._go_to(self.home_x, self.home_y, CRUISE_ALT)
             self._set_mode('RTL')
             self.get_logger().info('RTL initiated. Done.')
 
