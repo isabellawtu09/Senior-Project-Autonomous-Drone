@@ -38,9 +38,9 @@ class GroundingSamAltNode(Node):
 
         # Detection behavior
         self.declare_parameter("frame_stride", 5)
-        self.declare_parameter("box_threshold", 0.30)
+        self.declare_parameter("box_threshold", 0.60)
         self.declare_parameter("text_threshold", 0.25)
-        self.declare_parameter("found_threshold", 0.35)
+        self.declare_parameter("found_threshold", 0.60)
         self.declare_parameter("model_id", "IDEA-Research/grounding-dino-tiny")
 
         # Segmentation backend: none | mobile_sam | fastsam
