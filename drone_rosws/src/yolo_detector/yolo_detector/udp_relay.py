@@ -11,6 +11,14 @@ class UdpRelay(Node):
     def __init__(self):
         super().__init__('udp_relay_node')
         self.bridge = CvBridge()
+        # Control tokens should never become detection prompts.
+        self.control_tokens = {
+            "tracking",
+            "idle",
+            "found",
+            "start_boustrophedon",
+            "stop",
+        }
         
         # Ports must match Ground Station.
         # Same-machine setup: send video to localhost.
@@ -42,6 +50,8 @@ class UdpRelay(Node):
         )
         
         self.get_logger().info("UDP Relay started. Shouting for Ground Station...")
+        # Ensure mission/search starts from a clean "not found" state.
+        self.publish_object_found(False)
 
     def shout_for_ui(self):
         """Broadcasts DISCOVER message until a Ground Station responds"""
@@ -76,6 +86,7 @@ class UdpRelay(Node):
                 if not self.tracking_started:
                     self.get_logger().info("Launching lawnmower...")
                     self.tracking_started = True
+                    self.publish_object_found(False)
                     self.mission_process = subprocess.Popen(
                         "source /home/$USER/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash && ros2 run lawnmower lawnmower --ros-args -p mavros_ns:=/mavros",
                         shell=True,
@@ -88,6 +99,7 @@ class UdpRelay(Node):
                 self.tracking_pub.publish(msg)    
             elif cmd == b"IDLE":
                 self.tracking_started = False
+                self.publish_object_found(False)
                 if self.mission_process and self.mission_process.poll() is None:
                     self.mission_process.terminate()
                     self.mission_process = None
@@ -97,9 +109,20 @@ class UdpRelay(Node):
         cmd_sock.bind(("0.0.0.0", self.TRACK_PORT))
         while rclpy.ok():
             data, _ = cmd_sock.recvfrom(1024)
+            text = data.decode(errors="ignore").strip()
+            if not text:
+                continue
+            if text.lower() in self.control_tokens:
+                self.get_logger().warn(f"Ignoring control token on prompt port: '{text}'")
+                continue
             msg = String()
-            msg.data = data.decode().strip()
+            msg.data = text
             self.target_pub.publish(msg)
+
+    def publish_object_found(self, value: bool):
+        msg = Bool()
+        msg.data = value
+        self.tracking_pub.publish(msg)
 
     def send_to_ui_callback(self, msg):
         frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
