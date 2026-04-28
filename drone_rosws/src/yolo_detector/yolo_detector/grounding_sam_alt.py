@@ -17,7 +17,7 @@ import torch
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32MultiArray, String
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 
@@ -34,6 +34,7 @@ class GroundingSamAltNode(Node):
         self.declare_parameter("found_topic", "/object_found")
         self.declare_parameter("annotated_topic", "/grounding_sam_alt/annotated_image")
         self.declare_parameter("status_topic", "/grounding_sam_alt/status")
+        self.declare_parameter("target_info_topic", "/grounding_sam_alt/target_info")
 
         # Detection behavior
         self.declare_parameter("frame_stride", 5)
@@ -51,6 +52,7 @@ class GroundingSamAltNode(Node):
         self.found_topic = self.get_parameter("found_topic").value
         self.annotated_topic = self.get_parameter("annotated_topic").value
         self.status_topic = self.get_parameter("status_topic").value
+        self.target_info_topic = self.get_parameter("target_info_topic").value
 
         self.frame_stride = int(self.get_parameter("frame_stride").value)
         self.box_threshold = float(self.get_parameter("box_threshold").value)
@@ -82,6 +84,7 @@ class GroundingSamAltNode(Node):
         self.found_pub = self.create_publisher(Bool, self.found_topic, 10)
         self.annotated_pub = self.create_publisher(Image, self.annotated_topic, 5)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
+        self.target_info_pub = self.create_publisher(Float32MultiArray, self.target_info_topic, 10)
 
         # Run detector on timer so image callback stays lightweight.
         self.timer = self.create_timer(0.05, self.process_latest_frame)
@@ -116,17 +119,18 @@ class GroundingSamAltNode(Node):
                 return
             frame = self.latest_image.copy()
 
-        annotated, found = self.detect_and_annotate(frame, self.target_phrase)
+        annotated, found, info = self.detect_and_annotate(frame, self.target_phrase)
 
         found_msg = Bool()
         found_msg.data = found
         self.found_pub.publish(found_msg)
         self.annotated_pub.publish(self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8"))
+        self.publish_target_info(info)
 
-    def detect_and_annotate(self, frame_bgr: np.ndarray, phrase: str) -> Tuple[np.ndarray, bool]:
+    def detect_and_annotate(self, frame_bgr: np.ndarray, phrase: str) -> Tuple[np.ndarray, bool, dict]:
         phrase = phrase.strip()
         if not phrase:
-            return frame_bgr, False
+            return frame_bgr, False, self.make_target_info(False, 0.0, 0.5, 0.5, 0.0)
 
         # Grounding DINO performs better with sentence-like prompts.
         prompt = phrase if phrase.endswith(".") else f"{phrase}."
@@ -164,7 +168,7 @@ class GroundingSamAltNode(Node):
 
         if len(boxes) == 0:
             self.publish_status(f"No match: {phrase}")
-            return frame_bgr, False
+            return frame_bgr, False, self.make_target_info(False, 0.0, 0.5, 0.5, 0.0)
 
         best_idx = int(torch.argmax(scores).item()) if isinstance(scores, torch.Tensor) else 0
         best_box = boxes[best_idx].tolist() if isinstance(boxes[best_idx], torch.Tensor) else boxes[best_idx]
@@ -177,10 +181,15 @@ class GroundingSamAltNode(Node):
         y1 = max(0, min(y1, frame_bgr.shape[0] - 1))
         y2 = max(0, min(y2, frame_bgr.shape[0] - 1))
         if x2 <= x1 or y2 <= y1:
-            return frame_bgr, False
+            return frame_bgr, False, self.make_target_info(False, 0.0, 0.5, 0.5, 0.0)
 
         annotated = frame_bgr.copy()
         found = best_score >= self.found_threshold
+        h, w = frame_bgr.shape[:2]
+        cx = ((x1 + x2) * 0.5) / max(w, 1)
+        cy = ((y1 + y2) * 0.5) / max(h, 1)
+        area = ((x2 - x1) * (y2 - y1)) / max(float(w * h), 1.0)
+        target_info = self.make_target_info(True, best_score, cx, cy, area)
         if found:
             mask = self.segment_from_box(frame_bgr, (x1, y1, x2, y2))
             if mask is not None:
@@ -198,7 +207,7 @@ class GroundingSamAltNode(Node):
         self.publish_status(
             f"Best match '{best_label}' score={best_score:.2f} found={found} backend={self.segmenter_backend}"
         )
-        return annotated, found
+        return annotated, found, target_info
 
     def segment_from_box(self, frame_bgr: np.ndarray, box: Tuple[int, int, int, int]) -> Optional[np.ndarray]:
         if self.segmenter_backend == "none":
@@ -261,6 +270,27 @@ class GroundingSamAltNode(Node):
         msg = String()
         msg.data = text
         self.status_pub.publish(msg)
+
+    def make_target_info(self, visible: bool, score: float, cx: float, cy: float, area: float) -> dict:
+        return {
+            "visible": 1.0 if visible else 0.0,
+            "score": float(max(0.0, min(score, 1.0))),
+            "cx": float(max(0.0, min(cx, 1.0))),
+            "cy": float(max(0.0, min(cy, 1.0))),
+            "area": float(max(0.0, min(area, 1.0))),
+        }
+
+    def publish_target_info(self, info: dict) -> None:
+        msg = Float32MultiArray()
+        # Format: [visible, score, cx_norm, cy_norm, area_norm]
+        msg.data = [
+            float(info.get("visible", 0.0)),
+            float(info.get("score", 0.0)),
+            float(info.get("cx", 0.5)),
+            float(info.get("cy", 0.5)),
+            float(info.get("area", 0.0)),
+        ]
+        self.target_info_pub.publish(msg)
 
 
 def main(args=None) -> None:

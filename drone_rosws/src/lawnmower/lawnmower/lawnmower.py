@@ -20,12 +20,13 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from geographic_msgs.msg import GeoPointStamped
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Float32MultiArray
 
 import time
 import math
+from collections import deque
 
 # ─── Pattern Configuration ────────────────────────────────────────────────────
 DEFAULT_TAKEOFF_ALT = 2.0     # meters
@@ -76,6 +77,18 @@ class BoustrophedonNode(Node):
         self.declare_parameter('setpoint_rate', DEFAULT_SETPOINT_RATE)
         self.declare_parameter('world_half_extent', DEFAULT_WORLD_HALF_EXTENT)
         self.declare_parameter('wall_clearance', DEFAULT_WALL_CLEARANCE)
+        self.declare_parameter('target_info_topic', '/grounding_sam_alt/target_info')
+        self.declare_parameter('tracking_conf_threshold', 0.70)
+        self.declare_parameter('tracking_consistency_required', 3)
+        self.declare_parameter('tracking_consistency_window', 5)
+        self.declare_parameter('tracking_lost_timeout', 2.5)
+        self.declare_parameter('max_track_speed', 0.30)
+        self.declare_parameter('max_yaw_rate', 0.40)
+        self.declare_parameter('tracking_forward_kp', 0.8)
+        self.declare_parameter('tracking_lateral_kp', 0.8)
+        self.declare_parameter('tracking_yaw_kp', 2.0)
+        self.declare_parameter('tracking_center_tolerance', 0.10)
+        self.declare_parameter('tracking_target_area', 0.08)
 
         self.mavros_ns = self._normalize_ns(self.get_parameter('mavros_ns').value)
         self.takeoff_alt = float(self.get_parameter('takeoff_alt').value)
@@ -85,6 +98,18 @@ class BoustrophedonNode(Node):
         self.setpoint_rate = float(self.get_parameter('setpoint_rate').value)
         self.world_half_extent = float(self.get_parameter('world_half_extent').value)
         self.wall_clearance = float(self.get_parameter('wall_clearance').value)
+        self.target_info_topic = str(self.get_parameter('target_info_topic').value)
+        self.tracking_conf_threshold = float(self.get_parameter('tracking_conf_threshold').value)
+        self.tracking_consistency_required = int(self.get_parameter('tracking_consistency_required').value)
+        self.tracking_consistency_window = int(self.get_parameter('tracking_consistency_window').value)
+        self.tracking_lost_timeout = float(self.get_parameter('tracking_lost_timeout').value)
+        self.max_track_speed = float(self.get_parameter('max_track_speed').value)
+        self.max_yaw_rate = float(self.get_parameter('max_yaw_rate').value)
+        self.tracking_forward_kp = float(self.get_parameter('tracking_forward_kp').value)
+        self.tracking_lateral_kp = float(self.get_parameter('tracking_lateral_kp').value)
+        self.tracking_yaw_kp = float(self.get_parameter('tracking_yaw_kp').value)
+        self.tracking_center_tolerance = float(self.get_parameter('tracking_center_tolerance').value)
+        self.tracking_target_area = float(self.get_parameter('tracking_target_area').value)
 
         safe_half = max(self.world_half_extent - self.wall_clearance, 0.5)
         self.search_x_min = -safe_half
@@ -108,14 +133,23 @@ class BoustrophedonNode(Node):
         self.state = State()
         self.current_pose = PoseStamped()
         self.tracking_active = False
+        self.target_visible = False
+        self.target_score = 0.0
+        self.target_cx = 0.5
+        self.target_cy = 0.5
+        self.target_area = 0.0
+        self.last_consistent_detection_time = None
+        self.recent_detection_passes = deque(maxlen=max(self.tracking_consistency_window, 1))
         self.pose_msg_count = 0
         self.last_pose_wall_time = None
 
         self.create_subscription(State, self._topic('state'), self._state_cb, qos)
         self.create_subscription(PoseStamped, self._topic('local_position/pose'), self._pose_cb, qos)
         self.create_subscription(Bool, '/object_found', self._tracking_cb, 10)
+        self.create_subscription(Float32MultiArray, self.target_info_topic, self._target_info_cb, 10)
 
         self.setpoint_pub = self.create_publisher(PoseStamped, self._topic('setpoint_position/local'), 10)
+        self.velocity_pub = self.create_publisher(Twist, self._topic('setpoint_velocity/cmd_vel_unstamped'), 10)
 
         self.gp_origin_pub = self.create_publisher(GeoPointStamped, self._topic('global_position/set_gp_origin'), 10)
 
@@ -156,6 +190,24 @@ class BoustrophedonNode(Node):
         self.tracking_active = msg.data
         if self.tracking_active:
             self.get_logger().info('Object found! Stopping pattern.')
+        else:
+            self._publish_zero_velocity()
+
+    def _target_info_cb(self, msg: Float32MultiArray):
+        data = list(msg.data)
+        if len(data) < 5:
+            return
+        visible = data[0] >= 0.5
+        score = float(data[1])
+        self.target_visible = visible
+        self.target_score = score
+        self.target_cx = float(data[2])
+        self.target_cy = float(data[3])
+        self.target_area = float(data[4])
+        pass_now = visible and (score >= self.tracking_conf_threshold)
+        self.recent_detection_passes.append(1 if pass_now else 0)
+        if pass_now:
+            self.last_consistent_detection_time = time.time()
 
     def _distance_to(self, x, y, z):
         p = self.current_pose.pose.position
@@ -273,6 +325,56 @@ class BoustrophedonNode(Node):
                 self.get_logger().warn(f'  ⚠ Timeout reaching ({x:.1f},{y:.1f},{z:.1f}), continuing...')
                 return
 
+    def _has_consistent_detection(self) -> bool:
+        if len(self.recent_detection_passes) < self.tracking_consistency_required:
+            return False
+        return sum(self.recent_detection_passes) >= self.tracking_consistency_required
+
+    def _clamp(self, value: float, low: float, high: float) -> float:
+        return max(low, min(value, high))
+
+    def _publish_zero_velocity(self):
+        self.velocity_pub.publish(Twist())
+
+    def _compute_tracking_velocity(self) -> Twist:
+        cmd = Twist()
+        now = time.time()
+        consistent = self._has_consistent_detection()
+        lost = (
+            self.last_consistent_detection_time is None or
+            (now - self.last_consistent_detection_time) > self.tracking_lost_timeout
+        )
+        if not consistent or lost:
+            return cmd
+
+        ex = self.target_cx - 0.5
+        area_error = max(0.0, self.tracking_target_area - self.target_area)
+
+        # First center the target, then move forward conservatively.
+        if abs(ex) <= self.tracking_center_tolerance:
+            forward = self.tracking_forward_kp * area_error
+        else:
+            forward = 0.0
+        lateral = -self.tracking_lateral_kp * ex
+        yaw_rate = -self.tracking_yaw_kp * ex
+
+        cmd.linear.x = self._clamp(forward, 0.0, self.max_track_speed)
+        cmd.linear.y = self._clamp(lateral, -self.max_track_speed, self.max_track_speed)
+        cmd.linear.z = 0.0  # Keep altitude fixed in first tracking version.
+        cmd.angular.z = self._clamp(yaw_rate, -self.max_yaw_rate, self.max_yaw_rate)
+        return cmd
+
+    def _approach_target(self):
+        self.get_logger().info(
+            'Entering tracking approach mode (velocity clamp + confidence consistency + loss timeout).'
+        )
+        rate_sec = 1.0 / max(self.setpoint_rate, 1.0)
+        while rclpy.ok() and self.tracking_active:
+            rclpy.spin_once(self, timeout_sec=rate_sec)
+            cmd = self._compute_tracking_velocity()
+            self.velocity_pub.publish(cmd)
+        self._publish_zero_velocity()
+
     def run(self):
         self._wait_connected()
         self._set_gp_origin()
@@ -309,12 +411,7 @@ class BoustrophedonNode(Node):
                 break
 
         if self.tracking_active:
-            self.get_logger().info('Object found. Holding position...')
-            p = self.current_pose.pose.position
-            while rclpy.ok():
-                sp = self._make_setpoint(p.x, p.y, p.z)
-                self.setpoint_pub.publish(sp)
-                rclpy.spin_once(self, timeout_sec=0.05)
+            self._approach_target()
         else:
             self.get_logger().info('Pattern complete. Returning to launch...')
             self._go_to(0.0, 0.0, self.cruise_alt)
