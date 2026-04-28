@@ -11,7 +11,7 @@ Pattern layout (top view):
   →→→→→→→→→
   ...
 
-Uses /mavros/setpoint_position/local in GUIDED mode.
+Uses MAVROS setpoint topics in GUIDED mode.
 """
 
 import rclpy
@@ -28,8 +28,8 @@ import time
 import math
 
 # ─── Pattern Configuration ────────────────────────────────────────────────────
-TAKEOFF_ALT   = 4.0    # meters
-CRUISE_ALT    = 4.0    # meters AGL during pattern
+TAKEOFF_ALT   = 1.0    # meters
+CRUISE_ALT    = 1.0    # meters AGL during pattern
 AREA_WIDTH    = 8.0    # meters (X axis, direction of sweeps)
 AREA_HEIGHT   = 8.0    # meters (Y axis, cross-track spacing total)
 LANE_SPACING  = 2.0    # meters between rows
@@ -61,6 +61,9 @@ def generate_boustrophedon(width, height, spacing, altitude):
 class BoustrophedonNode(Node):
     def __init__(self):
         super().__init__('boustrophedon_node')
+        self.declare_parameter('mavros_ns', '/mavros')
+        self.mavros_ns = self._normalize_ns(self.get_parameter('mavros_ns').value)
+        self.get_logger().info(f'Using MAVROS namespace: {self.mavros_ns}')
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -71,24 +74,37 @@ class BoustrophedonNode(Node):
         self.state = State()
         self.current_pose = PoseStamped()
         self.tracking_active = False
+        self.pose_msg_count = 0
+        self.last_pose_wall_time = None
 
-        self.create_subscription(State, '/mavros/state', self._state_cb, qos)
-        self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._pose_cb, qos)
+        self.create_subscription(State, self._topic('state'), self._state_cb, qos)
+        self.create_subscription(PoseStamped, self._topic('local_position/pose'), self._pose_cb, qos)
         self.create_subscription(Bool, '/object_found', self._tracking_cb, 10)
 
-        self.setpoint_pub = self.create_publisher(PoseStamped, '/mavros/setpoint_position/local', 10)
+        self.setpoint_pub = self.create_publisher(PoseStamped, self._topic('setpoint_position/local'), 10)
 
-        self.gp_origin_pub  = self.create_publisher(GeoPointStamped, '/mavros/global_position/set_gp_origin', 10)
+        self.gp_origin_pub = self.create_publisher(GeoPointStamped, self._topic('global_position/set_gp_origin'), 10)
 
-        self.arming_client  = self.create_client(CommandBool, '/mavros/cmd/arming')
-        self.mode_client    = self.create_client(SetMode,     '/mavros/set_mode')
-        self.takeoff_client = self.create_client(CommandTOL,  '/mavros/cmd/takeoff')
+        self.arming_client = self.create_client(CommandBool, self._topic('cmd/arming'))
+        self.mode_client = self.create_client(SetMode, self._topic('set_mode'))
+        self.takeoff_client = self.create_client(CommandTOL, self._topic('cmd/takeoff'))
+
+    def _normalize_ns(self, ns: str) -> str:
+        ns = (ns or '/mavros').strip()
+        if not ns.startswith('/'):
+            ns = f'/{ns}'
+        return ns.rstrip('/')
+
+    def _topic(self, suffix: str) -> str:
+        return f'{self.mavros_ns}/{suffix}'
 
     def _state_cb(self, msg):
         self.state = msg
 
     def _pose_cb(self, msg):
         self.current_pose = msg
+        self.pose_msg_count += 1
+        self.last_pose_wall_time = time.time()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -139,13 +155,20 @@ class BoustrophedonNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
 
     def _wait_for_position_estimate(self, timeout=60):
-        """Wait until EKF provides a non-zero local position."""
+        """Wait until local-position stream is actively publishing fresh messages."""
         self.get_logger().info('Waiting for EKF position estimate...')
         start = time.time()
+        start_pose_count = self.pose_msg_count
         while True:
             rclpy.spin_once(self, timeout_sec=0.5)
-            p = self.current_pose.pose.position
-            if abs(p.x) > 0.01 or abs(p.y) > 0.01 or abs(p.z) > 0.01:
+            # Use message freshness instead of non-zero coordinates.
+            # In SITL, valid initial local position can legitimately stay near (0,0,0).
+            has_fresh_stream = (
+                self.pose_msg_count > start_pose_count + 2 and
+                self.last_pose_wall_time is not None and
+                (time.time() - self.last_pose_wall_time) < 1.5
+            )
+            if has_fresh_stream:
                 self.get_logger().info('Position estimate acquired.')
                 return
             # Re-publish origin periodically to nudge EKF

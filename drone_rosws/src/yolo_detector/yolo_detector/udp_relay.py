@@ -12,9 +12,9 @@ class UdpRelay(Node):
         super().__init__('udp_relay_node')
         self.bridge = CvBridge()
         
-        # Ports must match Ground Station
-        # self.UI_IP = "127.0.0.1" 
-        self.UI_IP = "172.20.10.2"
+        # Ports must match Ground Station.
+        # Same-machine setup: send video to localhost.
+        self.UI_IP = "127.0.0.1"
         
         self.DISCOVERY_PORT = 8499
         self.VIDEO_PORT = 8500
@@ -33,8 +33,13 @@ class UdpRelay(Node):
 
         self.target_pub = self.create_publisher(String, '/target_object', 10)
         self.tracking_pub = self.create_publisher(Bool, '/object_found', 10)
-        # self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
-        self.create_subscription(Image, '/world/iris_objects_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image', self.send_to_ui_callback, 5)
+        # Stream annotated detector output so UI shows bounding boxes.
+        self.create_subscription(
+            Image,
+            '/grounding_sam_alt/annotated_image',
+            self.send_to_ui_callback,
+            5,
+        )
         
         self.get_logger().info("UDP Relay started. Shouting for Ground Station...")
 
@@ -72,10 +77,10 @@ class UdpRelay(Node):
                     self.get_logger().info("Launching lawnmower...")
                     self.tracking_started = True
                     self.mission_process = subprocess.Popen(
-                    "source /home/$USER/src/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash && ros2 run lawnmower lawnmower",
-                    shell=True,
-                    executable="/bin/bash"
-                )
+                        "source /home/$USER/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash && ros2 run lawnmower lawnmower --ros-args -p mavros_ns:=/mavros",
+                        shell=True,
+                        executable="/bin/bash"
+                    )
             elif cmd == b"FOUND":
                 self.get_logger().info("Object found! Publishing tracking active.")
                 msg = Bool()
