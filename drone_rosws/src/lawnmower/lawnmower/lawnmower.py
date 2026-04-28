@@ -89,6 +89,8 @@ class BoustrophedonNode(Node):
         self.declare_parameter('tracking_yaw_kp', 2.0)
         self.declare_parameter('tracking_center_tolerance', 0.10)
         self.declare_parameter('tracking_target_area', 0.08)
+        self.declare_parameter('position_wait_timeout', 25.0)
+        self.declare_parameter('allow_position_timeout_continue', True)
 
         self.mavros_ns = self._normalize_ns(self.get_parameter('mavros_ns').value)
         self.takeoff_alt = float(self.get_parameter('takeoff_alt').value)
@@ -110,6 +112,8 @@ class BoustrophedonNode(Node):
         self.tracking_yaw_kp = float(self.get_parameter('tracking_yaw_kp').value)
         self.tracking_center_tolerance = float(self.get_parameter('tracking_center_tolerance').value)
         self.tracking_target_area = float(self.get_parameter('tracking_target_area').value)
+        self.position_wait_timeout = float(self.get_parameter('position_wait_timeout').value)
+        self.allow_position_timeout_continue = bool(self.get_parameter('allow_position_timeout_continue').value)
 
         safe_half = max(self.world_half_extent - self.wall_clearance, 0.5)
         self.search_x_min = -safe_half
@@ -213,6 +217,9 @@ class BoustrophedonNode(Node):
         p = self.current_pose.pose.position
         return math.sqrt((p.x - x)**2 + (p.y - y)**2 + (p.z - z)**2)
 
+    def _altitude_error(self, target_z: float) -> float:
+        return abs(self.current_pose.pose.position.z - target_z)
+
     def _spin_for(self, seconds):
         end = time.time() + seconds
         while time.time() < end:
@@ -237,14 +244,15 @@ class BoustrophedonNode(Node):
         msg.position.altitude  = alt
         for _ in range(5):
             self.gp_origin_pub.publish(msg)
-            time.sleep(0.2)
-            rclpy.spin_once(self, timeout_sec=0.1)
+            # Keep this non-blocking so startup cannot appear stuck at origin setup.
+            rclpy.spin_once(self, timeout_sec=0.05)
 
     def _wait_for_position_estimate(self, timeout=60):
         """Wait until local-position stream is actively publishing fresh messages."""
         self.get_logger().info('Waiting for EKF position estimate...')
         start = time.time()
         start_pose_count = self.pose_msg_count
+        last_origin_retry = start
         while True:
             rclpy.spin_once(self, timeout_sec=0.5)
             # Use message freshness instead of non-zero coordinates.
@@ -257,10 +265,17 @@ class BoustrophedonNode(Node):
             if has_fresh_stream:
                 self.get_logger().info('Position estimate acquired.')
                 return
-            # Re-publish origin periodically to nudge EKF
-            if (time.time() - start) % 5 < 0.6:
+            # Re-publish origin only every 5s (throttled) to nudge EKF.
+            now = time.time()
+            if (now - last_origin_retry) >= 5.0:
                 self._set_gp_origin()
-            if time.time() - start > timeout:
+                last_origin_retry = now
+            if now - start > timeout:
+                if self.allow_position_timeout_continue:
+                    self.get_logger().warn(
+                        'Timed out waiting for position estimate; continuing with conservative setpoints.'
+                    )
+                    return
                 raise RuntimeError('Timed out waiting for position estimate')
 
 
@@ -378,7 +393,7 @@ class BoustrophedonNode(Node):
     def run(self):
         self._wait_connected()
         self._set_gp_origin()
-        self._wait_for_position_estimate()
+        self._wait_for_position_estimate(timeout=self.position_wait_timeout)
         self._set_mode('GUIDED')
         time.sleep(1.0)
         self._arm()
@@ -387,8 +402,20 @@ class BoustrophedonNode(Node):
 
         # Wait to reach takeoff altitude
         self.get_logger().info('Waiting to reach takeoff altitude...')
-        while self._distance_to(0.0, 0.0, self.takeoff_alt) > 0.5:
+        takeoff_wait_start = time.time()
+        takeoff_wait_timeout = 25.0
+        while self._altitude_error(self.takeoff_alt) > 0.35:
+            # Keep publishing a hold setpoint while waiting; some stacks are more stable
+            # when position setpoints continue during/after takeoff command.
+            p = self.current_pose.pose.position
+            hold = self._make_setpoint(p.x, p.y, self.takeoff_alt)
+            self.setpoint_pub.publish(hold)
             rclpy.spin_once(self, timeout_sec=0.2)
+            if time.time() - takeoff_wait_start > takeoff_wait_timeout:
+                self.get_logger().warn(
+                    'Timed out waiting for takeoff altitude; continuing with current altitude.'
+                )
+                break
 
         # Generate and fly pattern
         waypoints = generate_boustrophedon_bounds(

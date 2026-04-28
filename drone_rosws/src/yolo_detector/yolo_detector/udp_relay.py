@@ -17,8 +17,8 @@ class UdpRelay(Node):
             "idle",
             "found",
             "start_boustrophedon",
-            "stop",
         }
+        self.active_prompt = ""
         
         # Ports must match Ground Station.
         # Same-machine setup: send video to localhost.
@@ -84,6 +84,9 @@ class UdpRelay(Node):
             cmd = data.strip()
             if cmd == b"TRACKING":
                 if not self.tracking_started:
+                    if not self.active_prompt:
+                        self.get_logger().warn("Ignoring TRACKING: no active target prompt set yet.")
+                        continue
                     self.get_logger().info("Launching lawnmower...")
                     self.tracking_started = True
                     self.publish_object_found(False)
@@ -112,11 +115,19 @@ class UdpRelay(Node):
             text = data.decode(errors="ignore").strip()
             if not text:
                 continue
+            if text.lower() == "stop":
+                # Explicitly clear the active detector prompt.
+                self.active_prompt = ""
+                msg = String()
+                msg.data = "stop"
+                self.target_pub.publish(msg)
+                continue
             if text.lower() in self.control_tokens:
                 self.get_logger().warn(f"Ignoring control token on prompt port: '{text}'")
                 continue
             msg = String()
             msg.data = text
+            self.active_prompt = text
             self.target_pub.publish(msg)
 
     def publish_object_found(self, value: bool):
