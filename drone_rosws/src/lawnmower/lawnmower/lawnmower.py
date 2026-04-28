@@ -28,30 +28,37 @@ import time
 import math
 
 # ─── Pattern Configuration ────────────────────────────────────────────────────
-TAKEOFF_ALT   = 1.0    # meters
-CRUISE_ALT    = 1.0    # meters AGL during pattern
-AREA_WIDTH    = 8.0    # meters (X axis, direction of sweeps)
-AREA_HEIGHT   = 8.0    # meters (Y axis, cross-track spacing total)
-LANE_SPACING  = 2.0    # meters between rows
-WAYPOINT_TOL  = 0.5    # meters - acceptance radius for each waypoint
-SETPOINT_RATE = 20.0   # Hz - rate to publish setpoints
+DEFAULT_TAKEOFF_ALT = 2.0     # meters
+DEFAULT_CRUISE_ALT = 2.0      # meters
+DEFAULT_LANE_SPACING = 2.0    # meters between rows
+DEFAULT_WAYPOINT_TOL = 0.5    # meters
+DEFAULT_SETPOINT_RATE = 20.0  # Hz
+# 15x15 interior means nominal free half-extent ~7.5m from world origin.
+DEFAULT_WORLD_HALF_EXTENT = 7.5
+# Keep this clearance from all perimeter walls to avoid clipping at turns/overshoot.
+DEFAULT_WALL_CLEARANCE = 1.5
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def generate_boustrophedon(width, height, spacing, altitude):
+def generate_boustrophedon_bounds(x_min, x_max, y_min, y_max, spacing, altitude):
     """
-    Generate boustrophedon waypoints starting at local origin (0,0).
+    Generate boustrophedon waypoints over bounded XY extents.
     Returns list of (x, y, z) tuples.
     """
+    if spacing <= 0:
+        raise ValueError("Lane spacing must be > 0")
+    if x_max <= x_min or y_max <= y_min:
+        raise ValueError("Invalid search bounds")
+
     waypoints = []
-    y = 0.0
+    y = y_min
     direction = 1  # 1 = forward (+X), -1 = reverse (-X)
 
-    while y <= height + 1e-6:
-        x_start = 0.0 if direction == 1 else width
-        x_end   = width if direction == 1 else 0.0
+    while y <= y_max + 1e-6:
+        x_start = x_min if direction == 1 else x_max
+        x_end = x_max if direction == 1 else x_min
         waypoints.append((x_start, y, altitude))
-        waypoints.append((x_end,   y, altitude))
+        waypoints.append((x_end, y, altitude))
         y += spacing
         direction *= -1
 
@@ -62,8 +69,35 @@ class BoustrophedonNode(Node):
     def __init__(self):
         super().__init__('boustrophedon_node')
         self.declare_parameter('mavros_ns', '/mavros')
+        self.declare_parameter('takeoff_alt', DEFAULT_TAKEOFF_ALT)
+        self.declare_parameter('cruise_alt', DEFAULT_CRUISE_ALT)
+        self.declare_parameter('lane_spacing', DEFAULT_LANE_SPACING)
+        self.declare_parameter('waypoint_tol', DEFAULT_WAYPOINT_TOL)
+        self.declare_parameter('setpoint_rate', DEFAULT_SETPOINT_RATE)
+        self.declare_parameter('world_half_extent', DEFAULT_WORLD_HALF_EXTENT)
+        self.declare_parameter('wall_clearance', DEFAULT_WALL_CLEARANCE)
+
         self.mavros_ns = self._normalize_ns(self.get_parameter('mavros_ns').value)
+        self.takeoff_alt = float(self.get_parameter('takeoff_alt').value)
+        self.cruise_alt = float(self.get_parameter('cruise_alt').value)
+        self.lane_spacing = float(self.get_parameter('lane_spacing').value)
+        self.waypoint_tol = float(self.get_parameter('waypoint_tol').value)
+        self.setpoint_rate = float(self.get_parameter('setpoint_rate').value)
+        self.world_half_extent = float(self.get_parameter('world_half_extent').value)
+        self.wall_clearance = float(self.get_parameter('wall_clearance').value)
+
+        safe_half = max(self.world_half_extent - self.wall_clearance, 0.5)
+        self.search_x_min = -safe_half
+        self.search_x_max = safe_half
+        self.search_y_min = -safe_half
+        self.search_y_max = safe_half
+
         self.get_logger().info(f'Using MAVROS namespace: {self.mavros_ns}')
+        self.get_logger().info(
+            f'Search bounds: x[{self.search_x_min:.1f}, {self.search_x_max:.1f}] '
+            f'y[{self.search_y_min:.1f}, {self.search_y_max:.1f}] '
+            f'clearance={self.wall_clearance:.1f}m'
+        )
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -219,7 +253,7 @@ class BoustrophedonNode(Node):
         """Publish setpoint and wait until within WAYPOINT_TOL."""
         self.get_logger().info(f'→ Waypoint ({x:.1f}, {y:.1f}, {z:.1f})')
         sp = self._make_setpoint(x, y, z)
-        rate_sec = 1.0 / SETPOINT_RATE
+        rate_sec = 1.0 / max(self.setpoint_rate, 1.0)
         start = time.time()
 
         while True:
@@ -231,7 +265,7 @@ class BoustrophedonNode(Node):
             rclpy.spin_once(self, timeout_sec=rate_sec)
 
             dist = self._distance_to(x, y, z)
-            if dist < WAYPOINT_TOL:
+            if dist < self.waypoint_tol:
                 self.get_logger().info(f'  ✓ Reached (dist={dist:.2f}m)')
                 return
 
@@ -247,18 +281,25 @@ class BoustrophedonNode(Node):
         time.sleep(1.0)
         self._arm()
         time.sleep(1.0)
-        self._takeoff(TAKEOFF_ALT)
+        self._takeoff(self.takeoff_alt)
 
         # Wait to reach takeoff altitude
         self.get_logger().info('Waiting to reach takeoff altitude...')
-        while self._distance_to(0.0, 0.0, TAKEOFF_ALT) > 0.5:
+        while self._distance_to(0.0, 0.0, self.takeoff_alt) > 0.5:
             rclpy.spin_once(self, timeout_sec=0.2)
 
         # Generate and fly pattern
-        waypoints = generate_boustrophedon(AREA_WIDTH, AREA_HEIGHT, LANE_SPACING, CRUISE_ALT)
+        waypoints = generate_boustrophedon_bounds(
+            self.search_x_min,
+            self.search_x_max,
+            self.search_y_min,
+            self.search_y_max,
+            self.lane_spacing,
+            self.cruise_alt,
+        )
         self.get_logger().info(
             f'Starting boustrophedon pattern: {len(waypoints)} waypoints, '
-            f'{AREA_WIDTH}m x {AREA_HEIGHT}m, {LANE_SPACING}m lane spacing'
+            f'lane spacing={self.lane_spacing:.1f}m altitude={self.cruise_alt:.1f}m'
         )
 
         for i, (x, y, z) in enumerate(waypoints):
@@ -276,7 +317,7 @@ class BoustrophedonNode(Node):
                 rclpy.spin_once(self, timeout_sec=0.05)
         else:
             self.get_logger().info('Pattern complete. Returning to launch...')
-            self._go_to(0.0, 0.0, CRUISE_ALT)
+            self._go_to(0.0, 0.0, self.cruise_alt)
             self._set_mode('RTL')
             self.get_logger().info('RTL initiated. Done.')
 
