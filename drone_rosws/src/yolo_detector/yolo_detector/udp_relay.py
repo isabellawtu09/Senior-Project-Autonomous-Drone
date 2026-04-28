@@ -95,6 +95,19 @@ class UdpRelay(Node):
                         shell=True,
                         executable="/bin/bash"
                     )
+            elif cmd == b"RETURN_HOME":
+                self.get_logger().info("RETURN_HOME requested. Sending drone to origin.")
+                self.tracking_started = False
+                self.publish_object_found(False)
+                if self.mission_process and self.mission_process.poll() is None:
+                    self.mission_process.terminate()
+                    self.mission_process = None
+                self.mission_process = subprocess.Popen(
+                    "source /home/$USER/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash && "
+                    "ros2 run lawnmower lawnmower --ros-args -p mavros_ns:=/mavros -p return_home_only:=true",
+                    shell=True,
+                    executable="/bin/bash",
+                )
             elif cmd == b"FOUND":
                 self.get_logger().info("Object found! Publishing tracking active.")
                 msg = Bool()

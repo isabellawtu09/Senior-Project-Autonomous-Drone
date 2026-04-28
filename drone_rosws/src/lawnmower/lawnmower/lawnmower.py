@@ -48,6 +48,8 @@ def generate_boustrophedon(width, height, spacing, altitude):
 class BoustrophedonNode(Node):
     def __init__(self):
         super().__init__("boustrophedon_node")
+        self.declare_parameter("return_home_only", False)
+        self.return_home_only = bool(self.get_parameter("return_home_only").value)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -178,6 +180,12 @@ class BoustrophedonNode(Node):
 
         self._set_mode("GUIDED")
         self._arm()
+
+        if self.return_home_only:
+            self.get_logger().info("Return-home mode active. Navigating to origin.")
+            self._go_to(0.0, 0.0, CRUISE_ALT, timeout=45.0)
+            self.get_logger().info("Return-home complete.")
+            return
 
         # Take off by holding a higher local setpoint.
         self._go_to(0.0, 0.0, TAKEOFF_ALT, timeout=30.0)

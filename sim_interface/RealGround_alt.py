@@ -175,11 +175,11 @@ class RealGroundAlt(QWidget):
         self.status_label.setText("STATUS: SEARCH ACTIVE")
 
     def stop_search(self):
-        # Stop mission flow and clear active detector text prompt.
-        self._send_udp(b"IDLE", COMMAND_PORT)
+        # Clear prompt and command a controlled return to origin.
         self._send_udp(b"stop", TRACK_PORT)
-        self.append_log("[COMMAND] IDLE + stop sent")
-        self.status_label.setText("STATUS: IDLE")
+        self._send_udp(b"RETURN_HOME", COMMAND_PORT)
+        self.append_log("[COMMAND] stop + RETURN_HOME sent")
+        self.status_label.setText("STATUS: RETURNING HOME")
 
 
 if __name__ == "__main__":
