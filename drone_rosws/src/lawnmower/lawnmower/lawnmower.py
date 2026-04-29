@@ -30,28 +30,31 @@ import math
 # ─── Pattern Configuration ────────────────────────────────────────────────────
 TAKEOFF_ALT   = 4.0    # meters
 CRUISE_ALT    = 4.0    # meters AGL during pattern
-AREA_WIDTH    = 8.0    # meters (X axis, direction of sweeps)
-AREA_HEIGHT   = 8.0    # meters (Y axis, cross-track spacing total)
+# Keep sweep safely inside 15x15 walls (walls are around +/-7.55).
+X_MIN         = -6.0
+X_MAX         = 6.0
+Y_MIN         = -6.0
+Y_MAX         = 6.0
 LANE_SPACING  = 2.0    # meters between rows
 WAYPOINT_TOL  = 0.5    # meters - acceptance radius for each waypoint
 SETPOINT_RATE = 20.0   # Hz - rate to publish setpoints
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def generate_boustrophedon(width, height, spacing, altitude):
+def generate_boustrophedon_bounds(x_min, x_max, y_min, y_max, spacing, altitude):
     """
-    Generate boustrophedon waypoints starting at local origin (0,0).
+    Generate boustrophedon waypoints within fixed XY bounds.
     Returns list of (x, y, z) tuples.
     """
     waypoints = []
-    y = 0.0
+    y = y_min
     direction = 1  # 1 = forward (+X), -1 = reverse (-X)
 
-    while y <= height + 1e-6:
-        x_start = 0.0 if direction == 1 else width
-        x_end   = width if direction == 1 else 0.0
+    while y <= y_max + 1e-6:
+        x_start = x_min if direction == 1 else x_max
+        x_end = x_max if direction == 1 else x_min
         waypoints.append((x_start, y, altitude))
-        waypoints.append((x_end,   y, altitude))
+        waypoints.append((x_end, y, altitude))
         y += spacing
         direction *= -1
 
@@ -265,10 +268,10 @@ class BoustrophedonNode(Node):
                 break
 
         # Generate and fly pattern
-        waypoints = generate_boustrophedon(AREA_WIDTH, AREA_HEIGHT, LANE_SPACING, CRUISE_ALT)
+        waypoints = generate_boustrophedon_bounds(X_MIN, X_MAX, Y_MIN, Y_MAX, LANE_SPACING, CRUISE_ALT)
         self.get_logger().info(
             f'Starting boustrophedon pattern: {len(waypoints)} waypoints, '
-            f'{AREA_WIDTH}m x {AREA_HEIGHT}m, {LANE_SPACING}m lane spacing'
+            f'x[{X_MIN},{X_MAX}] y[{Y_MIN},{Y_MAX}], lane spacing={LANE_SPACING}m'
         )
 
         for i, (x, y, z) in enumerate(waypoints):
