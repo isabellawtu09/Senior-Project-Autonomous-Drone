@@ -12,3 +12,6 @@ __pycache__/
 .vscode/
 .project
 .cproject
+.env
+.env.*
+!.env.example
