@@ -21,6 +21,18 @@ The latest flow includes:
 - ROS 2 installation sourced
 - Python environments for UI / YOLO dependencies (as used in your local setup)
 
+### Alternate Grounding DINO dependencies
+
+For `grounding_sam_alt.py` and `RealGround_alt.py`, create/use a virtual environment with system ROS packages visible:
+
+```bash
+cd /home/$USER/Senior-Project-Autonomous-Drone
+python3 -m venv .venv-alt --system-site-packages
+source .venv-alt/bin/activate
+pip install --upgrade pip
+pip install "numpy<2" opencv-python==4.9.0.80 transformers accelerate timm ultralytics PyQt6 MAVProxy future
+```
+
 Helpful documentation:
 - ArduPilot Dev: https://ardupilot.org/dev/index.html
 - MAVProxy: https://ardupilot.org/mavproxy/index.html
@@ -77,7 +89,7 @@ ros2 run ros_gz_bridge parameter_bridge \
 ### 4) Start mission and perception nodes
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source /home/$USER/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash
 ros2 run yolo_detector udp_relay
 ```
@@ -88,13 +100,31 @@ Optional:
 ros2 run yolo_detector yolo_node
 ```
 
+### 4b) Start alternate Grounding DINO detector (required for annotated boxes)
+
+```bash
+cd /home/$USER/Senior-Project-Autonomous-Drone
+source .venv-alt/bin/activate
+source /opt/ros/jazzy/setup.bash
+python3 drone_rosws/src/yolo_detector/yolo_detector/grounding_sam_alt.py --ros-args -p found_threshold:=0.7
+```
+
+Set/clear prompt:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+ros2 topic pub /target_object std_msgs/msg/String "{data: 'woman with blue shirt'}" -1
+ros2 topic pub /target_object std_msgs/msg/String "{data: 'stop'}" -1
+```
+
 ### 5) Start ground station
 
 For state-machine based tracking (`IDLE`, `TRACKING`, `FOUND`) that can trigger mission behavior:
 
 ```bash
 cd /home/$USER/Senior-Project-Autonomous-Drone/sim_interface
-python3 RealGround.py
+source /home/$USER/Senior-Project-Autonomous-Drone/.venv-alt/bin/activate
+python3 RealGround_alt.py
 ```
 
 ### 6) Run/verify path-planning node manually (optional)
@@ -112,4 +142,6 @@ This node executes a boustrophedon sweep and stops pattern progression when `/ob
 - The `15x15` world contains four perimeter wall models (`wall_north`, `wall_south`, `wall_east`, `wall_west`).
 - If you switch worlds, update topic names that include the world name (for example, camera topics under `/world/<world_name>/...`). In this repo, camera topic strings are currently set directly in `drone_rosws/src/yolo_detector/yolo_detector/udp_relay.py` and `drone_rosws/src/yolo_detector/yolo_detector/yolo_node.py`.
 - `sim_interface/ground_station.py` and `sim_interface/RealGround.py` are different interfaces; `RealGround.py` is currently aligned with the tracking state machine used by `udp_relay`.
+- `grounding_sam_alt.py` has no hardcoded target. It only detects after `/target_object` receives a non-empty prompt.
+- `udp_relay.py` currently streams `/grounding_sam_alt/annotated_image` so UI shows detector boxes.
 
