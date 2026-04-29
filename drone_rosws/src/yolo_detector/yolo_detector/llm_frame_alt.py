@@ -53,6 +53,10 @@ class LlmFrameAltNode(Node):
         self.declare_parameter("openai_base_url", "")
         self.declare_parameter("openai_endpoint", "")
         self.declare_parameter("env_file", ".env")
+        # Some models/providers reject custom temperature or json response_format.
+        self.declare_parameter("use_temperature", True)
+        self.declare_parameter("temperature", 0.0)
+        self.declare_parameter("use_json_response_format", True)
 
         self.camera_topic = self.get_parameter("camera_topic").value
         self.target_topic = self.get_parameter("target_topic").value
@@ -70,6 +74,9 @@ class LlmFrameAltNode(Node):
         self.openai_base_url = str(self.get_parameter("openai_base_url").value).strip()
         self.openai_endpoint = str(self.get_parameter("openai_endpoint").value).strip()
         self.env_file = str(self.get_parameter("env_file").value).strip() or ".env"
+        self.use_temperature = bool(self.get_parameter("use_temperature").value)
+        self.temperature = float(self.get_parameter("temperature").value)
+        self.use_json_response_format = bool(self.get_parameter("use_json_response_format").value)
 
         self.load_env_file(self.env_file)
 
@@ -99,6 +106,9 @@ class LlmFrameAltNode(Node):
                 "OpenAI endpoint/base URL not set. "
                 "Set openai_endpoint or openai_base_url (or OPENAI_ENDPOINT / OPENAI_BASE_URL)."
             )
+        else:
+            self.get_logger().info(f"Using LLM endpoint: {self.openai_endpoint}")
+            self.get_logger().info(f"Using LLM model: {self.model}")
         self.publish_status("llm_frame_alt ready. Waiting for target prompt on /target_object")
 
     def load_env_file(self, env_file: str) -> None:
@@ -165,7 +175,14 @@ class LlmFrameAltNode(Node):
                 return
             frame = self.latest_image.copy()
 
-        annotated, found, info = self.detect_with_llm(frame, self.target_phrase)
+        try:
+            annotated, found, info = self.detect_with_llm(frame, self.target_phrase)
+        except Exception as exc:
+            self.get_logger().error(f"LLM detection error: {exc}")
+            self.publish_status(f"LLM error: {exc}")
+            annotated = frame
+            found = False
+            info = self.make_target_info(False, 0.0, 0.5, 0.5, 0.0)
 
         found_msg = Bool()
         found_msg.data = found
@@ -220,16 +237,15 @@ class LlmFrameAltNode(Node):
         instruction = (
             "You are a strict vision detector for a drone search task. "
             f"Target prompt: '{phrase}'. "
-            "Return ONLY valid JSON with keys: found (boolean), confidence (0..1), "
+            "Return ONLY valid JSON (no markdown, no prose) with keys: "
+            "found (boolean), confidence (0..1), "
             "cx (0..1), cy (0..1), area (0..1), reason (short string). "
             "If target is not visible, set found=false and confidence near 0."
         )
-        return {
+        payload: dict = {
             "model": self.model,
-            "temperature": 0.0,
-            "response_format": {"type": "json_object"},
             "messages": [
-                {"role": "system", "content": "You produce strict JSON only."},
+                {"role": "system", "content": "You produce strict JSON only. No markdown."},
                 {
                     "role": "user",
                     "content": [
@@ -239,6 +255,11 @@ class LlmFrameAltNode(Node):
                 },
             ],
         }
+        if self.use_temperature:
+            payload["temperature"] = self.temperature
+        if self.use_json_response_format:
+            payload["response_format"] = {"type": "json_object"}
+        return payload
 
     def call_openai(self, payload: dict) -> dict:
         body = json.dumps(payload).encode("utf-8")
@@ -262,20 +283,49 @@ class LlmFrameAltNode(Node):
             raise RuntimeError(f"OpenAI request failed: {exc}") from exc
 
     def parse_decision(self, api_response: dict) -> dict:
+        content = ""
+        decision: dict = {}
         try:
             content = api_response["choices"][0]["message"]["content"]
+            if isinstance(content, list):
+                # Some providers return content as a list of parts; join text parts.
+                content = "".join(
+                    part.get("text", "") for part in content if isinstance(part, dict)
+                )
             decision = json.loads(content)
         except Exception:
-            decision = {"found": False, "confidence": 0.0, "cx": 0.5, "cy": 0.5, "area": 0.0, "reason": "parse_error"}
+            decision = self.try_extract_json(str(content))
+
+        if not isinstance(decision, dict):
+            decision = {}
 
         return {
             "found": bool(decision.get("found", False)),
-            "confidence": float(max(0.0, min(float(decision.get("confidence", 0.0)), 1.0))),
-            "cx": float(max(0.0, min(float(decision.get("cx", 0.5)), 1.0))),
-            "cy": float(max(0.0, min(float(decision.get("cy", 0.5)), 1.0))),
-            "area": float(max(0.0, min(float(decision.get("area", 0.0)), 1.0))),
-            "reason": str(decision.get("reason", "")),
+            "confidence": float(max(0.0, min(float(decision.get("confidence", 0.0) or 0.0), 1.0))),
+            "cx": float(max(0.0, min(float(decision.get("cx", 0.5) or 0.5), 1.0))),
+            "cy": float(max(0.0, min(float(decision.get("cy", 0.5) or 0.5), 1.0))),
+            "area": float(max(0.0, min(float(decision.get("area", 0.0) or 0.0), 1.0))),
+            "reason": str(decision.get("reason", "") or ""),
         }
+
+    def try_extract_json(self, text: str) -> dict:
+        """Best-effort JSON extraction from model output (handles ```json fences)."""
+        if not text:
+            return {}
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:]
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return {}
+        candidate = cleaned[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except Exception:
+            return {}
 
     def draw_overlay(
         self,
