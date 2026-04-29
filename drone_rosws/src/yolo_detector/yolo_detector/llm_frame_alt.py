@@ -44,7 +44,7 @@ class LlmFrameAltNode(Node):
         # LLM behavior
         self.declare_parameter("frame_stride", 8)
         self.declare_parameter("found_threshold", 0.65)
-        self.declare_parameter("model", "gpt-4.1-mini")
+        self.declare_parameter("model", "5.2")
         self.declare_parameter("request_timeout_s", 15.0)
         self.declare_parameter("max_image_width", 640)
         self.declare_parameter("jpeg_quality", 70)
@@ -78,10 +78,14 @@ class LlmFrameAltNode(Node):
         self.temperature = float(self.get_parameter("temperature").value)
         self.use_json_response_format = bool(self.get_parameter("use_json_response_format").value)
 
-        self.load_env_file(self.env_file)
+        self.env_file_loaded_from = self.load_env_file(self.env_file)
 
+        # Param wins; otherwise fall back to env (which may have been populated by .env above).
         key_from_param = str(self.get_parameter("openai_api_key").value).strip()
         self.openai_api_key = key_from_param if key_from_param else os.environ.get("OPENAI_API_KEY", "").strip()
+        self.openai_api_key_source = "param" if key_from_param else ("env" if self.openai_api_key else "missing")
+        if not self.openai_base_url:
+            self.openai_base_url = os.environ.get("OPENAI_BASE_URL", "").strip() or os.environ.get("OPENAI_API_BASE", "").strip()
         self.openai_endpoint = self.resolve_openai_endpoint()
 
         self.bridge = CvBridge()
@@ -99,40 +103,82 @@ class LlmFrameAltNode(Node):
 
         self.timer = self.create_timer(0.08, self.process_latest_frame)
 
-        if not self.openai_api_key:
-            self.get_logger().warn("OPENAI_API_KEY not set. LLM decisions will be disabled.")
-        if not self.openai_endpoint:
-            self.get_logger().warn(
-                "OpenAI endpoint/base URL not set. "
-                "Set openai_endpoint or openai_base_url (or OPENAI_ENDPOINT / OPENAI_BASE_URL)."
-            )
-        else:
-            self.get_logger().info(f"Using LLM endpoint: {self.openai_endpoint}")
-            self.get_logger().info(f"Using LLM model: {self.model}")
+        self.log_startup_config()
         self.publish_status("llm_frame_alt ready. Waiting for target prompt on /target_object")
 
-    def load_env_file(self, env_file: str) -> None:
+    def log_startup_config(self) -> None:
+        """Print a one-shot summary so you can verify key/base URL wiring at boot."""
+        log = self.get_logger()
+        if self.env_file_loaded_from:
+            log.info(f".env loaded from: {self.env_file_loaded_from}")
+        else:
+            log.info(
+                f".env not found (looked for '{self.env_file}'). Using only existing process env."
+            )
+
+        masked_key = self.mask_secret(self.openai_api_key)
+        log.info(f"OPENAI_API_KEY ({self.openai_api_key_source}): {masked_key}")
+        log.info(f"OPENAI_BASE_URL: '{self.openai_base_url or '(unset)'}'")
+        log.info(f"Resolved endpoint: '{self.openai_endpoint or '(unset)'}'")
+        log.info(f"Model: {self.model}")
+
+        if not self.openai_api_key:
+            log.warn("OPENAI_API_KEY is empty. LLM decisions will be disabled.")
+        if not self.openai_endpoint:
+            log.warn(
+                "OpenAI endpoint/base URL is empty. "
+                "Set openai_endpoint or openai_base_url (or OPENAI_ENDPOINT / OPENAI_BASE_URL)."
+            )
+            return
+
+        # Sanity-check the resolved URL.
+        if not (self.openai_endpoint.startswith("http://") or self.openai_endpoint.startswith("https://")):
+            log.error(
+                f"Endpoint missing http(s) scheme: '{self.openai_endpoint}'. "
+                "Set OPENAI_BASE_URL to something like https://host/v1"
+            )
+        if self.openai_endpoint.endswith("/chat/completions/chat/completions"):
+            log.error(
+                "Endpoint already contains /chat/completions twice. "
+                "OPENAI_BASE_URL should be the API root (e.g. https://host/v1), not include /chat/completions."
+            )
+
+    @staticmethod
+    def mask_secret(secret: str) -> str:
+        if not secret:
+            return "(empty)"
+        if len(secret) <= 8:
+            return f"len={len(secret)} {'*' * len(secret)}"
+        return f"len={len(secret)} {secret[:4]}...{secret[-4:]}"
+
+    def load_env_file(self, env_file: str) -> str:
         """
         Lightweight .env loader (KEY=VALUE), used to avoid extra dependency.
-        Existing environment variables are preserved.
+        Existing environment variables are preserved. Returns the path that was
+        loaded, or an empty string if no .env file was found.
         """
         env_path = Path(env_file)
         if not env_path.is_absolute():
             env_path = Path.cwd() / env_path
         if not env_path.exists():
-            return
+            return ""
         try:
             for raw_line in env_path.read_text(encoding="utf-8").splitlines():
                 line = raw_line.strip()
                 if not line or line.startswith("#") or "=" not in line:
                     continue
+                # Tolerate `export KEY=value` lines.
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
                 key, value = line.split("=", 1)
                 key = key.strip()
                 value = value.strip().strip('"').strip("'")
                 if key and key not in os.environ:
                     os.environ[key] = value
+            return str(env_path)
         except Exception as exc:
             self.get_logger().warn(f"Failed reading env file '{env_path}': {exc}")
+            return ""
 
     def target_callback(self, msg: String) -> None:
         phrase = msg.data.strip().lower()
@@ -263,13 +309,19 @@ class LlmFrameAltNode(Node):
 
     def call_openai(self, payload: dict) -> dict:
         body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.openai_api_key}",
+        }
+        # One-line per-request audit: confirms which endpoint/model/auth-prefix is in use.
+        self.get_logger().debug(
+            f"POST {self.openai_endpoint} model={payload.get('model')} "
+            f"auth=Bearer {self.mask_secret(self.openai_api_key)} bytes={len(body)}"
+        )
         req = urllib.request.Request(
             self.openai_endpoint,
             data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.openai_api_key}",
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -278,9 +330,9 @@ class LlmFrameAltNode(Node):
                 return json.loads(data)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"OpenAI HTTP error {exc.code}: {detail}") from exc
+            raise RuntimeError(f"OpenAI HTTP error {exc.code} from {self.openai_endpoint}: {detail}") from exc
         except Exception as exc:
-            raise RuntimeError(f"OpenAI request failed: {exc}") from exc
+            raise RuntimeError(f"OpenAI request failed to {self.openai_endpoint}: {exc}") from exc
 
     def parse_decision(self, api_response: dict) -> dict:
         content = ""
