@@ -49,7 +49,9 @@ class LlmFrameAltNode(Node):
         self.declare_parameter("max_image_width", 640)
         self.declare_parameter("jpeg_quality", 70)
         self.declare_parameter("openai_api_key", "")
-        self.declare_parameter("openai_endpoint", "https://api.openai.com/v1/chat/completions")
+        # Prefer custom base URL / endpoint. No default to OpenAI-hosted URL.
+        self.declare_parameter("openai_base_url", "")
+        self.declare_parameter("openai_endpoint", "")
         self.declare_parameter("env_file", ".env")
 
         self.camera_topic = self.get_parameter("camera_topic").value
@@ -65,13 +67,15 @@ class LlmFrameAltNode(Node):
         self.request_timeout_s = float(self.get_parameter("request_timeout_s").value)
         self.max_image_width = int(self.get_parameter("max_image_width").value)
         self.jpeg_quality = int(self.get_parameter("jpeg_quality").value)
-        self.openai_endpoint = str(self.get_parameter("openai_endpoint").value)
+        self.openai_base_url = str(self.get_parameter("openai_base_url").value).strip()
+        self.openai_endpoint = str(self.get_parameter("openai_endpoint").value).strip()
         self.env_file = str(self.get_parameter("env_file").value).strip() or ".env"
 
         self.load_env_file(self.env_file)
 
         key_from_param = str(self.get_parameter("openai_api_key").value).strip()
         self.openai_api_key = key_from_param if key_from_param else os.environ.get("OPENAI_API_KEY", "").strip()
+        self.openai_endpoint = self.resolve_openai_endpoint()
 
         self.bridge = CvBridge()
         self.target_phrase = ""
@@ -90,6 +94,11 @@ class LlmFrameAltNode(Node):
 
         if not self.openai_api_key:
             self.get_logger().warn("OPENAI_API_KEY not set. LLM decisions will be disabled.")
+        if not self.openai_endpoint:
+            self.get_logger().warn(
+                "OpenAI endpoint/base URL not set. "
+                "Set openai_endpoint or openai_base_url (or OPENAI_ENDPOINT / OPENAI_BASE_URL)."
+            )
         self.publish_status("llm_frame_alt ready. Waiting for target prompt on /target_object")
 
     def load_env_file(self, env_file: str) -> None:
@@ -124,6 +133,23 @@ class LlmFrameAltNode(Node):
         self.target_phrase = phrase
         self.publish_status(f"Target updated: {self.target_phrase}")
 
+    def resolve_openai_endpoint(self) -> str:
+        # 1) explicit endpoint param
+        if self.openai_endpoint:
+            return self.openai_endpoint
+        # 2) env explicit endpoint
+        env_endpoint = os.environ.get("OPENAI_ENDPOINT", "").strip()
+        if env_endpoint:
+            return env_endpoint
+
+        # 3) base URL param or env
+        base = self.openai_base_url or os.environ.get("OPENAI_BASE_URL", "").strip()
+        if not base:
+            base = os.environ.get("OPENAI_API_BASE", "").strip()
+        if not base:
+            return ""
+        return f"{base.rstrip('/')}/chat/completions"
+
     def image_callback(self, msg: Image) -> None:
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         with self.lock:
@@ -154,6 +180,9 @@ class LlmFrameAltNode(Node):
 
         if not self.openai_api_key:
             self.publish_status("No OpenAI API key available; cannot run LLM detection.")
+            return frame_bgr, False, self.make_target_info(False, 0.0, 0.5, 0.5, 0.0)
+        if not self.openai_endpoint:
+            self.publish_status("No OpenAI endpoint/base URL configured; cannot run LLM detection.")
             return frame_bgr, False, self.make_target_info(False, 0.0, 0.5, 0.5, 0.0)
 
         small = self.resize_for_api(frame_bgr)
