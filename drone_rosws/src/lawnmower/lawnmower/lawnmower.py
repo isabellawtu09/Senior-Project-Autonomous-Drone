@@ -71,10 +71,12 @@ class BoustrophedonNode(Node):
         self.state = State()
         self.current_pose = PoseStamped()
         self.tracking_active = False
+        self.rtl_commanded = False
 
         self.create_subscription(State, '/mavros/state', self._state_cb, qos)
         self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._pose_cb, qos)
         self.create_subscription(Bool, '/object_found', self._tracking_cb, 10)
+        self.create_subscription(Bool, '/command_rtl', self._rtl_cb, 10)
 
         self.setpoint_pub = self.create_publisher(PoseStamped, '/mavros/setpoint_position/local', 10)
 
@@ -101,6 +103,11 @@ class BoustrophedonNode(Node):
         sp.pose.position.z = z
         sp.pose.orientation.w = 1.0
         return sp
+    
+    def _rtl_cb(self, msg):
+        if msg.data:
+            self.rtl_commanded = True
+            self.get_logger().info('RTL commanded from GCS.')
     
     def _tracking_cb(self, msg):
         self.tracking_active = msg.data
@@ -200,8 +207,8 @@ class BoustrophedonNode(Node):
         start = time.time()
 
         while True:
-            if self.tracking_active:
-                return
+            if self.tracking_active or self.rtl_commanded:
+                return  
             
             sp.header.stamp = self.get_clock().now().to_msg()
             self.setpoint_pub.publish(sp)
@@ -241,16 +248,23 @@ class BoustrophedonNode(Node):
         for i, (x, y, z) in enumerate(waypoints):
             self.get_logger().info(f'[{i+1}/{len(waypoints)}]')
             self._go_to(x, y, z)
+            if self.rtl_commanded:
+                self.get_logger().info('RTL commanded. Switching mode...')
+                self._set_mode('RTL')
+                return
             if self.tracking_active:
                 break
 
         if self.tracking_active:
             self.get_logger().info('Object found. Holding position...')
             p = self.current_pose.pose.position
-            while rclpy.ok():
+            while rclpy.ok() and not self.rtl_commanded:
                 sp = self._make_setpoint(p.x, p.y, p.z)
                 self.setpoint_pub.publish(sp)
                 rclpy.spin_once(self, timeout_sec=0.05)
+            if self.rtl_commanded:
+                self.get_logger().info('RTL commanded during hold.')
+                self._set_mode('RTL')
         else:
             self.get_logger().info('Pattern complete. Returning to launch...')
             self._go_to(0.0, 0.0, CRUISE_ALT)

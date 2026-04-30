@@ -81,7 +81,16 @@ class UdpRelay(Node):
                 self.get_logger().info("Object found! Publishing tracking active.")
                 msg = Bool()
                 msg.data = True
-                self.tracking_pub.publish(msg)    
+                self.tracking_pub.publish(msg) 
+            elif cmd == b"STOP":
+                self.get_logger().info("Stop received. Commanding RTL.")
+                self.tracking_started = False
+                if self.mission_process and self.mission_process.poll() is None:
+                    self.mission_process.terminate()
+                    self.mission_process = None
+                rtl_msg = Bool()
+                rtl_msg.data = True
+                self.rtl_pub.publish(rtl_msg)
             elif cmd == b"IDLE":
                 self.tracking_started = False
                 if self.mission_process and self.mission_process.poll() is None:

@@ -378,6 +378,7 @@ class GroundStation(QWidget):
         if Target is not None:
             self.append_log(f"[SYSTEM] Aborting track for '{Target}'.")
             Target = None
+            commandSock.sendto(b"STOP", (drone_ip, COMMANDPORT))
         else:
             self.append_log("[SYSTEM] Already in IDLE state.")
         self.textBox.clear()
