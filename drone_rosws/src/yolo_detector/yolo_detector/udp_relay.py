@@ -13,8 +13,8 @@ class UdpRelay(Node):
         self.bridge = CvBridge()
         
         # Ports must match Ground Station
-        # self.UI_IP = "127.0.0.1" 
-        self.UI_IP = "172.20.10.2"
+        self.UI_IP = "127.0.0.1" 
+        # self.UI_IP = "172.20.10.2"
         
         self.DISCOVERY_PORT = 8499
         self.VIDEO_PORT = 8500
@@ -33,8 +33,9 @@ class UdpRelay(Node):
 
         self.target_pub = self.create_publisher(String, '/target_object', 10)
         self.tracking_pub = self.create_publisher(Bool, '/object_found', 10)
+        self.rtl_pub = self.create_publisher(Bool, '/command_rtl', 10)
         # self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
-        self.create_subscription(Image, '/world/iris_objects_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image', self.send_to_ui_callback, 5)
+        self.create_subscription(Image, '/world/iris_runway_15x15_walls/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image', self.send_to_ui_callback, 5)
         
         self.get_logger().info("UDP Relay started. Shouting for Ground Station...")
 
@@ -99,7 +100,7 @@ class UdpRelay(Node):
     def send_to_ui_callback(self, msg):
         frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         frame = cv2.resize(frame, (640, 480))
-        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
+        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
         data = buffer.tobytes()
 
         for i in range(0, len(data), self.MAX_UDP):
