@@ -28,8 +28,8 @@ import time
 import math
 
 # ─── Pattern Configuration ────────────────────────────────────────────────────
-TAKEOFF_ALT   = 4.0    # meters
-CRUISE_ALT    = 4.0    # meters AGL during pattern
+TAKEOFF_ALT   = 1.0    # meters
+CRUISE_ALT    = 1.0    # meters AGL during pattern
 AREA_WIDTH    = 8.0    # meters (X axis, direction of sweeps)
 AREA_HEIGHT   = 8.0    # meters (Y axis, cross-track spacing total)
 LANE_SPACING  = 2.0    # meters between rows
