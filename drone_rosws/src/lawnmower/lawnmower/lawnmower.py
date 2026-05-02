@@ -14,6 +14,7 @@ Pattern layout (top view):
 Uses /mavros/setpoint_position/local in GUIDED mode.
 """
 
+from geometry_msgs import msg
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -23,7 +24,7 @@ from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from geometry_msgs.msg import PoseStamped
 from geographic_msgs.msg import GeoPointStamped
 from std_msgs.msg import Bool
-
+from geometry_msgs.msg import Vector3
 import time
 import math
 
@@ -72,7 +73,9 @@ class BoustrophedonNode(Node):
         self.current_pose = PoseStamped()
         self.tracking_active = False
         self.rtl_commanded = False
+        self.target_offset = None
 
+        self.create_subscription(Vector3, '/target_offset', self._offset_cb, 10)
         self.create_subscription(State, '/mavros/state', self._state_cb, qos)
         self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._pose_cb, qos)
         self.create_subscription(Bool, '/object_found', self._tracking_cb, 10)
@@ -103,6 +106,22 @@ class BoustrophedonNode(Node):
         sp.pose.position.z = z
         sp.pose.orientation.w = 1.0
         return sp
+    
+    def _offset_cb(self, msg):
+        self.target_offset = (msg.x, msg.y)
+
+    def _approach_target(self, step=0.12, dead_zone=0.12, max_steps=30):
+        self.get_logger().info("Approaching target...")
+        for _ in range(max_steps):
+            if self.rtl_commanded or self.target_offset is None:
+                return
+            ox, oy = self.target_offset
+            if abs(ox) < dead_zone and abs(oy) < dead_zone:
+                self.get_logger().info("Target centered. Holding.")
+                return
+            p = self.current_pose.pose.position
+            self._go_to(p.x + (-oy * step), p.y + (-ox * step), p.z, timeout=10, respect_tracking=False)
+            self._spin_for(0.5)
     
     def _rtl_cb(self, msg):
         if msg.data:
@@ -199,7 +218,7 @@ class BoustrophedonNode(Node):
             raise RuntimeError('Takeoff command failed')
         self.get_logger().info(f'Taking off to {altitude}m...')
 
-    def _go_to(self, x, y, z, timeout=60):
+    def _go_to(self, x, y, z, timeout=60, respect_tracking=True):
         """Publish setpoint and wait until within WAYPOINT_TOL."""
         self.get_logger().info(f'→ Waypoint ({x:.1f}, {y:.1f}, {z:.1f})')
         sp = self._make_setpoint(x, y, z)
@@ -207,8 +226,10 @@ class BoustrophedonNode(Node):
         start = time.time()
 
         while True:
-            if self.tracking_active or self.rtl_commanded:
-                return  
+            if self.rtl_commanded:
+                return
+            if respect_tracking and self.tracking_active:
+                return
             
             sp.header.stamp = self.get_clock().now().to_msg()
             self.setpoint_pub.publish(sp)
@@ -253,17 +274,18 @@ class BoustrophedonNode(Node):
                 self._set_mode('RTL')
                 return
             if self.tracking_active:
+                self._approach_target()
                 break
 
         if self.tracking_active:
-            self.get_logger().info('Object found. Holding position...')
+            self._approach_target()
+            self.get_logger().info("Holding final position...")
             p = self.current_pose.pose.position
             while rclpy.ok() and not self.rtl_commanded:
                 sp = self._make_setpoint(p.x, p.y, p.z)
                 self.setpoint_pub.publish(sp)
                 rclpy.spin_once(self, timeout_sec=0.05)
             if self.rtl_commanded:
-                self.get_logger().info('RTL commanded during hold.')
                 self._set_mode('RTL')
         else:
             self.get_logger().info('Pattern complete. Returning to launch...')

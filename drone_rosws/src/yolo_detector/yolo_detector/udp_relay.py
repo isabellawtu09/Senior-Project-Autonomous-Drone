@@ -6,6 +6,7 @@ import socket
 import cv2
 import threading
 from cv_bridge import CvBridge
+from geometry_msgs.msg import Vector3
 
 class UdpRelay(Node):
     def __init__(self):
@@ -34,6 +35,8 @@ class UdpRelay(Node):
         self.target_pub = self.create_publisher(String, '/target_object', 10)
         self.tracking_pub = self.create_publisher(Bool, '/object_found', 10)
         self.rtl_pub = self.create_publisher(Bool, '/command_rtl', 10)
+        self.offset_pub = self.create_publisher(Vector3, '/target_offset', 10)
+
         # self.create_subscription(Image, '/ultralytics/detection/image', self.send_to_ui_callback, 5)
         self.create_subscription(Image, '/world/iris_runway_15x15_walls/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image', self.send_to_ui_callback, 5)
         
@@ -77,11 +80,19 @@ class UdpRelay(Node):
                     shell=True,
                     executable="/bin/bash"
                 )
-            elif cmd == b"FOUND":
-                self.get_logger().info("Object found! Publishing tracking active.")
+            elif cmd.startswith(b"FOUND"):
+                parts = cmd.decode().split(":")
+                offset_x = float(parts[1]) if len(parts) == 3 else 0.0
+                offset_y = float(parts[2]) if len(parts) == 3 else 0.0
+                self.get_logger().info(f"Object found! Offset: ({offset_x:.2f}, {offset_y:.2f})")
                 msg = Bool()
                 msg.data = True
-                self.tracking_pub.publish(msg) 
+                self.tracking_pub.publish(msg)
+                from geometry_msgs.msg import Vector3
+                offset_msg = Vector3()
+                offset_msg.x = offset_x
+                offset_msg.y = offset_y
+                self.offset_pub.publish(offset_msg)
             elif cmd == b"STOP":
                 self.get_logger().info("Stop received. Commanding RTL.")
                 self.tracking_started = False

@@ -113,6 +113,8 @@ class InferenceThread(QThread):
                                 if cls_name == Target:
                                     found_in_current_frame = True
                                     x1, y1, x2, y2 = map(int, box.xyxy[0])
+                                    box_cx = (x1 + x2) / 2
+                                    box_cy = (y1 + y2) / 2
                                     
                                     label = f"{cls_name} {conf * 100:.0f}%"
                                     
@@ -151,7 +153,16 @@ class InferenceThread(QThread):
                 current_state = "IDLE"
 
             # Update Drone and UI
-            commandSock.sendto(current_state.encode(), (drone_ip, COMMANDPORT))
+            # commandSock.sendto(current_state.encode(), (drone_ip, COMMANDPORT))
+            # Update Drone and UI
+            if current_state == "FOUND" and found_in_current_frame:
+                frame_h, frame_w = frame.shape[:2]
+                offset_x = (box_cx - frame_w / 2) / (frame_w / 2)
+                offset_y = (box_cy - frame_h / 2) / (frame_h / 2)
+                msg = f"FOUND:{offset_x:.4f}:{offset_y:.4f}" # little weird but i concat the offsets into the command string to avoid needing a separate UDP message type
+                commandSock.sendto(msg.encode(), (drone_ip, COMMANDPORT))
+            else:
+                commandSock.sendto(current_state.encode(), (drone_ip, COMMANDPORT))
             self.state_change_signal.emit(current_state)
 
             # Process Image for GUI
