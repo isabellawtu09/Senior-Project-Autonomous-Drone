@@ -1,20 +1,9 @@
 ## Senior Project Autonomous Drone
 
-The latest flow includes:
-- a `15m x 15m` walled world (`iris_runway_15x15_walls.sdf`)
-- a boustrophedon ("lawnmower") path-planning mission node
-- YOLO-based target search/tracking support
 
-## Repository Components
-
-- `ardupilot_gazebo/`: Gazebo models/worlds/plugins (including wall environments)
-- `drone_rosws/src/lawnmower/`: path-planning mission node
-- `drone_rosws/src/yolo_detector/`: YOLO processor + UDP relay node
-- `sim_interface/`: ground-station GUIs both real and simulated
 
 ## Prerequisites
 - Python environments for UI / YOLO dependencies (as used in your local setup)
-
 
 
 ```bash
