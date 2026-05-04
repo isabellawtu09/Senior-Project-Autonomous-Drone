@@ -1,7 +1,5 @@
 ## Senior Project Autonomous Drone
 
-This repository contains the Gazebo world assets, ROS 2 nodes, and ground-station tools used for autonomous search + tracking simulation with ArduPilot SITL.
-
 The latest flow includes:
 - a `15m x 15m` walled world (`iris_runway_15x15_walls.sdf`)
 - a boustrophedon ("lawnmower") path-planning mission node
@@ -12,18 +10,12 @@ The latest flow includes:
 - `ardupilot_gazebo/`: Gazebo models/worlds/plugins (including wall environments)
 - `drone_rosws/src/lawnmower/`: path-planning mission node
 - `drone_rosws/src/yolo_detector/`: YOLO processor + UDP relay node
-- `sim_interface/`: ground-station GUIs (`RealGround.py`, `ground_station.py`)
+- `sim_interface/`: ground-station GUIs both real and simulated
 
 ## Prerequisites
-
-- ArduPilot SITL installed and working
-- Gazebo Harmonic/Garden installed
-- ROS 2 installation sourced
 - Python environments for UI / YOLO dependencies (as used in your local setup)
 
-### Alternate Grounding DINO dependencies
 
-For `grounding_sam_alt.py` and `RealGround_alt.py`, create/use a virtual environment with system ROS packages visible:
 
 ```bash
 cd /home/$USER/Senior-Project-Autonomous-Drone
@@ -74,74 +66,43 @@ From your ArduPilot directory:
 
 ```bash
 sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --map --console
+
+# In SITL, paste the following:
+output add 127.0.0.1:14550
 ```
 
 ### 3) Start ROS <-> Gazebo camera bridge
 
 ```bash
-source /opt/ros/humble/setup.bash
-source /home/$USER/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash
 ros2 run ros_gz_bridge parameter_bridge \
 "/world/iris_runway_15x15_walls/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image" \
 "/world/iris_runway_15x15_walls/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo"
 ```
 
-### 4) Start mission and perception nodes
+### 4) Start mission and perception nodes in drone_rosws yolo_detector package
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-source /home/$USER/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash
-ros2 run yolo_detector udp_relay
+source /home/$USER/Senior-Project-Autonomous-Drone/.venv-alt/bin/activate
+python3 udp_relay.py
 ```
 
-Optional:
 
-```bash
-ros2 run yolo_detector yolo_node
-```
-
-### 4b) Start alternate Grounding DINO detector (required for annotated boxes)
-
-```bash
-cd /home/$USER/Senior-Project-Autonomous-Drone
-source .venv-alt/bin/activate
-source /opt/ros/jazzy/setup.bash
-python3 drone_rosws/src/yolo_detector/yolo_detector/grounding_sam_alt.py --ros-args -p found_threshold:=0.7
-```
-
-Set/clear prompt:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-ros2 topic pub /target_object std_msgs/msg/String "{data: 'woman with blue shirt'}" -1
-ros2 topic pub /target_object std_msgs/msg/String "{data: 'stop'}" -1
-```
 
 ### 5) Start ground station
 
 For state-machine based tracking (`IDLE`, `TRACKING`, `FOUND`) that can trigger mission behavior:
 
 ```bash
-cd /home/$USER/Senior-Project-Autonomous-Drone/sim_interface
 source /home/$USER/Senior-Project-Autonomous-Drone/.venv-alt/bin/activate
-python3 RealGround_alt.py
+python3 GroundStation_sim.py
 ```
 
-### 6) Run/verify path-planning node manually (optional)
+
+
+### 6) Run mavros
+
 
 ```bash
-source /opt/ros/humble/setup.bash
-source /home/$USER/Senior-Project-Autonomous-Drone/drone_rosws/install/setup.bash
-ros2 run lawnmower lawnmower
+ros2 launch mavros apm.launch fcu_url:=udp://127.0.0.1:14550@
+
 ```
-
-This node executes a boustrophedon sweep and stops pattern progression when `/object_found` becomes `True`.
-
-## Notes
-
-- The `15x15` world contains four perimeter wall models (`wall_north`, `wall_south`, `wall_east`, `wall_west`).
-- If you switch worlds, update topic names that include the world name (for example, camera topics under `/world/<world_name>/...`). In this repo, camera topic strings are currently set directly in `drone_rosws/src/yolo_detector/yolo_detector/udp_relay.py` and `drone_rosws/src/yolo_detector/yolo_detector/yolo_node.py`.
-- `sim_interface/ground_station.py` and `sim_interface/RealGround.py` are different interfaces; `RealGround.py` is currently aligned with the tracking state machine used by `udp_relay`.
-- `grounding_sam_alt.py` has no hardcoded target. It only detects after `/target_object` receives a non-empty prompt.
-- `udp_relay.py` currently streams `/grounding_sam_alt/annotated_image` so UI shows detector boxes.
-
