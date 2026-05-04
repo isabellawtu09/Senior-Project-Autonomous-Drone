@@ -151,7 +151,7 @@ class UdpRelay(Node):
     def send_to_ui_callback(self, msg):
         frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         frame = cv2.resize(frame, (640, 480))
-        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
+        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
         data = buffer.tobytes()
 
         for i in range(0, len(data), self.MAX_UDP):
