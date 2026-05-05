@@ -31,11 +31,13 @@ import math
 # ─── Pattern Configuration ────────────────────────────────────────────────────
 TAKEOFF_ALT   = 1.0    # meters
 CRUISE_ALT    = 1.0    # meters AGL during pattern
-AREA_WIDTH    = 8.0    # meters (X axis, direction of sweeps)
-AREA_HEIGHT   = 8.0    # meters (Y axis, cross-track spacing total)
+AREA_WIDTH    = 14.0    # meters (X axis, direction of sweeps)
+AREA_HEIGHT   = 14.0    # meters (Y axis, cross-track spacing total)
 LANE_SPACING  = 2.0    # meters between rows
 WAYPOINT_TOL  = 0.5    # meters - acceptance radius for each waypoint
 SETPOINT_RATE = 20.0   # Hz - rate to publish setpoints
+PATTERN_ORIGIN_X = -7.0   # start X of sweep area
+PATTERN_ORIGIN_Y = -7.0   # start Y of sweep area
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -250,16 +252,29 @@ class BoustrophedonNode(Node):
         self._wait_for_position_estimate()
         self._set_mode('GUIDED')
         time.sleep(1.0)
+    # Pre-stream setpoints so FCU accepts navigation after takeoff
+        self.get_logger().info('Pre-streaming setpoints...')
+        p = self.current_pose.pose.position
+        for _ in range(50):  # ~2.5 seconds at 20Hz
+            sp = self._make_setpoint(p.x, p.y, p.z + TAKEOFF_ALT)
+            self.setpoint_pub.publish(sp)
+            self._spin_for(0.05)
+
         self._arm()
         time.sleep(1.0)
         self._takeoff(TAKEOFF_ALT)
 
         # Wait to reach takeoff altitude
         self.get_logger().info('Waiting to reach takeoff altitude...')
-        while self._distance_to(0.0, 0.0, TAKEOFF_ALT) > 0.5:
+        while self._distance_to(
+            self.current_pose.pose.position.x,
+            self.current_pose.pose.position.y,
+            TAKEOFF_ALT
+        ) > 0.5:
             rclpy.spin_once(self, timeout_sec=0.2)
 
         # Generate and fly pattern
+        # waypoints = generate_boustrophedon(AREA_WIDTH, AREA_HEIGHT, LANE_SPACING, CRUISE_ALT)
         waypoints = generate_boustrophedon(AREA_WIDTH, AREA_HEIGHT, LANE_SPACING, CRUISE_ALT)
         self.get_logger().info(
             f'Starting boustrophedon pattern: {len(waypoints)} waypoints, '
@@ -268,7 +283,8 @@ class BoustrophedonNode(Node):
 
         for i, (x, y, z) in enumerate(waypoints):
             self.get_logger().info(f'[{i+1}/{len(waypoints)}]')
-            self._go_to(x, y, z)
+            # self._go_to(x, y, z)
+            self._go_to(x + PATTERN_ORIGIN_X, y + PATTERN_ORIGIN_Y, z)
             if self.rtl_commanded:
                 self.get_logger().info('RTL commanded. Switching mode...')
                 self._set_mode('RTL')

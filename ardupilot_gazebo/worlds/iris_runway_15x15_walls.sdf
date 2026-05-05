@@ -199,7 +199,9 @@
 
     <include>
       <uri>model://iris_with_gimbal</uri>
-      <pose degrees="true">0 0 0.195 0 0 90</pose>
+      <!-- <pose degrees="true">0 0 0.195 0 0 90</pose> -->
+      <!-- <pose degrees="true">-5.5 -2.0 0.195 0 0 90</pose> -->
+      <pose degrees="true">-5.5 -6.0 0.195 0 0 90</pose>
     </include>
 
         <!-- 15 m × 15 m interior, four perimeter walls (0.1 m thick, 2.5 m tall) -->
