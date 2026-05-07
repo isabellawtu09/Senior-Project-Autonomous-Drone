@@ -13,6 +13,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String, Bool
+from mavros_msgs.srv import SetMode
 import cv2
 from cv_bridge import CvBridge
 
@@ -46,6 +47,8 @@ class UdpRelay(Node):
         # Initialise mission state here so _terminate_mission is always safe to call
         self.mission_process = None
         self.tracking_started = False
+
+        self._mode_client = self.create_client(SetMode, '/mavros/set_mode')
 
         threading.Thread(target=self.shout_for_ui, daemon=True).start()
         threading.Thread(target=self.listen_for_ui_commands, daemon=True).start()
@@ -125,6 +128,22 @@ class UdpRelay(Node):
         self.get_logger().warn("[FOUND] Lawnmower did not stop in time. Sending SIGTERM.")
         self._terminate_mission()
 
+    def _set_mode_rtl(self):
+        """Call /mavros/set_mode to switch the drone to RTL from a background thread."""
+        if not self._mode_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error("[RTL] /mavros/set_mode service not available.")
+            return
+        req = SetMode.Request()
+        req.custom_mode = 'RTL'
+        fut = self._mode_client.call_async(req)
+        done = threading.Event()
+        fut.add_done_callback(lambda _: done.set())
+        done.wait(timeout=5.0)
+        if fut.done() and fut.result() and fut.result().mode_sent:
+            self.get_logger().info("[RTL] Mode set to RTL.")
+        else:
+            self.get_logger().error("[RTL] Failed to set RTL mode.")
+
     def listen_for_mission_commands(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("0.0.0.0", self.COMMAND_PORT))
@@ -177,6 +196,12 @@ class UdpRelay(Node):
                 # FIX #1: Use graceful stop — topic first, SIGTERM only as fallback.
                 self.get_logger().info("[FOUND] Object found! Starting graceful stop sequence.")
                 threading.Thread(target=self._graceful_stop, daemon=True).start()
+
+            elif cmd == b"RTL":
+                self.get_logger().info("[RTL] Stop tracking requested. Terminating mission and switching to RTL.")
+                self._terminate_mission()
+                self.publish_object_found(False)
+                threading.Thread(target=self._set_mode_rtl, daemon=True).start()
 
             elif cmd == b"RETURN_HOME":
                 self.get_logger().info("RETURN_HOME requested.")

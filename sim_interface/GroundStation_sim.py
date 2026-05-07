@@ -655,6 +655,13 @@ class GroundStation(QWidget):
             self.hunter_thread = None
 
         self.inf.stop_cv_tracker()
+
+        try:
+            commandSock.sendto(b"RTL", (drone_ip, COMMANDPORT))
+            self.append_log("[NETWORK] RTL command sent to drone.")
+        except Exception as e:
+            self.append_log(f"[NETWORK ERROR] Could not send RTL command: {e}")
+
         self.append_log("[SYSTEM] Tracker Cleared. Standing by.")
         self.textBox.clear()
 
