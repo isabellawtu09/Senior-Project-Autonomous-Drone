@@ -15,3 +15,4 @@ __pycache__/
 .env
 .env.*
 !.env.example
+yolov8m-world.pt

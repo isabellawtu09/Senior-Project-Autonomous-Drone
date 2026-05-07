@@ -148,7 +148,7 @@ class UdpRelay(Node):
 
                 if not self.tracking_started:
                     user = os.environ.get("USER", os.environ.get("LOGNAME", ""))
-                    ws = f"/home/{user}/Senior-Project-Autonomous-Drone/drone_rosws"
+                    ws = f"/home/{user}/src/Senior-Project-Autonomous-Drone/drone_rosws"
                     self.get_logger().info(f"[LAWNMOWER] Launching with USER='{user}', ws='{ws}'")
 
                     self.tracking_started = True
@@ -178,7 +178,7 @@ class UdpRelay(Node):
                 self._terminate_mission()
 
                 user = os.environ.get("USER", os.environ.get("LOGNAME", ""))
-                ws = f"/home/{user}/Senior-Project-Autonomous-Drone/drone_rosws"
+                ws = f"/home/{user}/src/Senior-Project-Autonomous-Drone/drone_rosws"
 
                 import subprocess
                 self.mission_process = subprocess.Popen(
