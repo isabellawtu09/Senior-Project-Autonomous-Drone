@@ -84,6 +84,11 @@ class UdpRelay(Node):
             self.get_logger().info(f"[LAWNMOWER] {line.decode(errors='ignore').strip()}")
         for line in proc.stderr:
             self.get_logger().error(f"[LAWNMOWER] STDERR: {line.decode(errors='ignore').strip()}")
+        # Both streams closed — process has exited naturally. Reset so a new mission can start.
+        if self.mission_process is proc:
+            self.tracking_started = False
+            self.mission_process = None
+            self.get_logger().info("[LAWNMOWER] Process exited. Ready for new mission.")
 
     def _terminate_mission(self):
         """Safely terminate the lawnmower process."""
