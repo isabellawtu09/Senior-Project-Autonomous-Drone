@@ -129,10 +129,12 @@ class BoustrophedonNode(Node):
     def _offset_cb(self, msg):
         self.target_offset = (msg.x, msg.y)
 
-    def _approach_target(self, step=1.0, dead_zone=0.10, max_steps=50, dwell=1.5):
-        """Move drone incrementally until the target is centered in the camera frame.
-        step:  meters to move per unit of normalized offset (offset in [-1, 1])
-        dwell: seconds to publish each step setpoint before reading offset again
+    def _approach_target(self, kp=2.0, dead_zone=0.08, max_step=1.2, timeout=60):
+        """Continuously steer toward target using proportional control at 20 Hz.
+
+        kp:       gain mapping normalized offset [-1, 1] to meters of lookahead
+        dead_zone: normalized offset below which the target is considered centered
+        max_step: cap on lookahead distance in meters to prevent overshooting
         """
         self.get_logger().info('Approaching target...')
         rate_sec = 1.0 / SETPOINT_RATE
@@ -145,27 +147,42 @@ class BoustrophedonNode(Node):
             self.get_logger().warn('No target offset received. Aborting approach.')
             return
 
-        for _ in range(max_steps):
+        # Seed the EMA with the first reading
+        smooth_ox, smooth_oy = self.target_offset
+        alpha = 0.3  # EMA weight for new measurements — lower = smoother but laggier
+        start = time.time()
+
+        while time.time() - start < timeout:
             if self.rtl_commanded:
                 return
+            rclpy.spin_once(self, timeout_sec=rate_sec)
+
+            if self.target_offset is None:
+                continue
+
             ox, oy = self.target_offset
-            self.get_logger().info(f'  offset=({ox:.3f}, {oy:.3f})')
-            if abs(ox) < dead_zone and abs(oy) < dead_zone:
+            smooth_ox = alpha * ox + (1.0 - alpha) * smooth_ox
+            smooth_oy = alpha * oy + (1.0 - alpha) * smooth_oy
+
+            self.get_logger().info(f'  offset=({smooth_ox:.3f}, {smooth_oy:.3f})')
+
+            if abs(smooth_ox) < dead_zone and abs(smooth_oy) < dead_zone:
                 self.get_logger().info('Target centered. Holding.')
                 return
+
             p = self.current_pose.pose.position
             # Camera frame → drone frame: ox shifts left/right (drone Y), oy shifts forward/back (drone X)
-            tx = p.x + (-oy * step)
-            ty = p.y + (-ox * step)
-            sp = self._make_setpoint(tx, ty, p.z)
-            # Publish continuously for `dwell` seconds so the FCU actually acts on it
-            dwell_end = time.time() + dwell
-            while time.time() < dwell_end:
-                if self.rtl_commanded:
-                    return
-                sp.header.stamp = self.get_clock().now().to_msg()
-                self.setpoint_pub.publish(sp)
-                rclpy.spin_once(self, timeout_sec=rate_sec)
+            dx = -smooth_oy * kp
+            dy = -smooth_ox * kp
+
+            magnitude = math.sqrt(dx**2 + dy**2)
+            if magnitude > max_step:
+                dx = dx / magnitude * max_step
+                dy = dy / magnitude * max_step
+
+            sp = self._make_setpoint(p.x + dx, p.y + dy, p.z)
+            sp.header.stamp = self.get_clock().now().to_msg()
+            self.setpoint_pub.publish(sp)
 
     def _distance_to(self, x, y, z):
         p = self.current_pose.pose.position
