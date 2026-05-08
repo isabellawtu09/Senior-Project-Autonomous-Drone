@@ -29,8 +29,8 @@ import time
 import math
 
 # ─── Pattern Configuration ────────────────────────────────────────────────────
-TAKEOFF_ALT   = 4.0    # meters
-CRUISE_ALT    = 4.0    # meters AGL during pattern
+TAKEOFF_ALT   = 2.0    # meters
+CRUISE_ALT    = 2.0    # meters AGL during pattern
 # Keep sweep safely inside 15x15 walls (walls are around +/-7.55).
 X_MIN         = -6.0
 X_MAX         = 6.0
