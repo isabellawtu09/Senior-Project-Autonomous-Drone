@@ -13,6 +13,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String, Bool
+from geometry_msgs.msg import Vector3
 from mavros_msgs.srv import SetMode
 import cv2
 from cv_bridge import CvBridge
@@ -56,6 +57,8 @@ class UdpRelay(Node):
 
         self.target_pub = self.create_publisher(String, '/target_object', 10)
         self.tracking_pub = self.create_publisher(Bool, '/object_found', 10)
+        self.offset_pub = self.create_publisher(Vector3, '/target_offset', 10)
+        self._last_found_log = 0.0
         self.create_subscription(
             Image,
             self.camera_topic,
@@ -192,10 +195,26 @@ class UdpRelay(Node):
                 else:
                     self.get_logger().warn("[LAWNMOWER] Already running, ignoring duplicate TRACKING command.")
 
-            elif cmd == b"FOUND":
-                # FIX #1: Use graceful stop — topic first, SIGTERM only as fallback.
-                self.get_logger().info("[FOUND] Object found! Starting graceful stop sequence.")
-                threading.Thread(target=self._graceful_stop, daemon=True).start()
+            elif cmd.startswith(b"FOUND"):
+                parts = cmd.decode(errors="ignore").split(":")
+                if len(parts) == 3:
+                    try:
+                        offset_x = float(parts[1])
+                        offset_y = float(parts[2])
+                    except ValueError:
+                        continue
+                    self.publish_object_found(True)
+                    offset_msg = Vector3()
+                    offset_msg.x = offset_x
+                    offset_msg.y = offset_y
+                    self.offset_pub.publish(offset_msg)
+                    now = time.time()
+                    if now - self._last_found_log > 1.0:
+                        self.get_logger().info(f"[FOUND] offset=({offset_x:.3f}, {offset_y:.3f})")
+                        self._last_found_log = now
+                else:
+                    self.get_logger().info("[FOUND] Object found! Starting graceful stop sequence.")
+                    threading.Thread(target=self._graceful_stop, daemon=True).start()
 
             elif cmd == b"RTL":
                 self.get_logger().info("[RTL] Stop tracking requested. Terminating mission and switching to RTL.")

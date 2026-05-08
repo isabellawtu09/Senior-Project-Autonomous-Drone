@@ -23,6 +23,7 @@ from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from geometry_msgs.msg import PoseStamped
 from geographic_msgs.msg import GeoPointStamped
 from std_msgs.msg import Bool
+from geometry_msgs.msg import Vector3
 
 import time
 import math
@@ -76,6 +77,8 @@ class BoustrophedonNode(Node):
         self.state = State()
         self.current_pose = PoseStamped()
         self.tracking_active = False
+        self.rtl_commanded = False
+        self.target_offset = None
         self.home_captured = False
         self.home_x = 0.0
         self.home_y = 0.0
@@ -84,6 +87,8 @@ class BoustrophedonNode(Node):
         self.create_subscription(State, '/mavros/state', self._state_cb, qos)
         self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._pose_cb, qos)
         self.create_subscription(Bool, '/object_found', self._tracking_cb, 10)
+        self.create_subscription(Bool, '/command_rtl', self._rtl_cb, 10)
+        self.create_subscription(Vector3, '/target_offset', self._offset_cb, 10)
 
         self.setpoint_pub = self.create_publisher(PoseStamped, '/mavros/setpoint_position/local', 10)
 
@@ -112,9 +117,55 @@ class BoustrophedonNode(Node):
         return sp
     
     def _tracking_cb(self, msg):
-        self.tracking_active = msg.data
-        if self.tracking_active:
+        if msg.data and not self.tracking_active:
             self.get_logger().info('Object found! Stopping pattern.')
+        self.tracking_active = msg.data
+
+    def _rtl_cb(self, msg):
+        if msg.data:
+            self.rtl_commanded = True
+            self.get_logger().info('RTL commanded.')
+
+    def _offset_cb(self, msg):
+        self.target_offset = (msg.x, msg.y)
+
+    def _approach_target(self, step=1.0, dead_zone=0.10, max_steps=50, dwell=1.5):
+        """Move drone incrementally until the target is centered in the camera frame.
+        step:  meters to move per unit of normalized offset (offset in [-1, 1])
+        dwell: seconds to publish each step setpoint before reading offset again
+        """
+        self.get_logger().info('Approaching target...')
+        rate_sec = 1.0 / SETPOINT_RATE
+
+        # Wait up to 3 s for the first offset reading before giving up
+        wait_start = time.time()
+        while self.target_offset is None and time.time() - wait_start < 3.0:
+            rclpy.spin_once(self, timeout_sec=0.1)
+        if self.target_offset is None:
+            self.get_logger().warn('No target offset received. Aborting approach.')
+            return
+
+        for _ in range(max_steps):
+            if self.rtl_commanded:
+                return
+            ox, oy = self.target_offset
+            self.get_logger().info(f'  offset=({ox:.3f}, {oy:.3f})')
+            if abs(ox) < dead_zone and abs(oy) < dead_zone:
+                self.get_logger().info('Target centered. Holding.')
+                return
+            p = self.current_pose.pose.position
+            # Camera frame → drone frame: ox shifts left/right (drone Y), oy shifts forward/back (drone X)
+            tx = p.x + (-oy * step)
+            ty = p.y + (-ox * step)
+            sp = self._make_setpoint(tx, ty, p.z)
+            # Publish continuously for `dwell` seconds so the FCU actually acts on it
+            dwell_end = time.time() + dwell
+            while time.time() < dwell_end:
+                if self.rtl_commanded:
+                    return
+                sp.header.stamp = self.get_clock().now().to_msg()
+                self.setpoint_pub.publish(sp)
+                rclpy.spin_once(self, timeout_sec=rate_sec)
 
     def _distance_to(self, x, y, z):
         p = self.current_pose.pose.position
@@ -215,7 +266,7 @@ class BoustrophedonNode(Node):
             raise RuntimeError('Takeoff command failed')
         self.get_logger().info(f'Taking off to {altitude}m...')
 
-    def _go_to(self, x, y, z, timeout=60):
+    def _go_to(self, x, y, z, timeout=60, respect_tracking=True):
         """Publish setpoint and wait until within WAYPOINT_TOL."""
         self.get_logger().info(f'→ Waypoint ({x:.1f}, {y:.1f}, {z:.1f})')
         sp = self._make_setpoint(x, y, z)
@@ -223,7 +274,9 @@ class BoustrophedonNode(Node):
         start = time.time()
 
         while True:
-            if self.tracking_active:
+            if self.rtl_commanded:
+                return
+            if respect_tracking and self.tracking_active:
                 return
             
             sp.header.stamp = self.get_clock().now().to_msg()
@@ -277,16 +330,22 @@ class BoustrophedonNode(Node):
         for i, (x, y, z) in enumerate(waypoints):
             self.get_logger().info(f'[{i+1}/{len(waypoints)}]')
             self._go_to(x, y, z)
+            if self.rtl_commanded:
+                self._set_mode('RTL')
+                return
             if self.tracking_active:
                 break
 
         if self.tracking_active:
-            self.get_logger().info('Object found. Holding position...')
+            self._approach_target()
+            self.get_logger().info('Holding final position...')
             p = self.current_pose.pose.position
-            while rclpy.ok():
+            while rclpy.ok() and not self.rtl_commanded:
                 sp = self._make_setpoint(p.x, p.y, p.z)
                 self.setpoint_pub.publish(sp)
                 rclpy.spin_once(self, timeout_sec=0.05)
+            if self.rtl_commanded:
+                self._set_mode('RTL')
         else:
             self.get_logger().info('Pattern complete. Returning to launch...')
             self._go_to(self.home_x, self.home_y, CRUISE_ALT)

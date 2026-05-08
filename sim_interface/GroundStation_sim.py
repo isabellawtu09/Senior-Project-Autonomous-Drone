@@ -392,6 +392,17 @@ class InferenceThread(QThread):
 
             self.state_change_signal.emit(current_state)
 
+            if drone_ip is not None:
+                if found and self.target_bbox is not None:
+                    frame_h, frame_w = frame.shape[:2]
+                    bx1, by1, bw, bh = self.target_bbox
+                    cx = bx1 + bw / 2.0
+                    cy = by1 + bh / 2.0
+                    offset_x = (cx - frame_w / 2.0) / (frame_w / 2.0)
+                    offset_y = (cy - frame_h / 2.0) / (frame_h / 2.0)
+                    cmd = f"FOUND:{offset_x:.4f}:{offset_y:.4f}".encode()
+                    commandSock.sendto(cmd, (drone_ip, COMMANDPORT))
+
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb.shape
             qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
