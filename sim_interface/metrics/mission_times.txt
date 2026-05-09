@@ -1,0 +1,4 @@
+no ai mode
+can
+[2026-05-09 15:22:59]  Time to detection: 0m 4.2s  (4.2s)
+[2026-05-09 15:27:44]  Time to detection: 0m 4.9s  (4.9s)
