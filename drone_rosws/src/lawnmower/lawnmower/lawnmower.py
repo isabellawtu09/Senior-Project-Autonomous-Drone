@@ -129,7 +129,7 @@ class BoustrophedonNode(Node):
     def _offset_cb(self, msg):
         self.target_offset = (msg.x, msg.y)
 
-    def _approach_target(self, kp=2.0, dead_zone=0.08, max_step=1.2, timeout=60):
+    def _approach_target(self, kp=0.8, dead_zone=0.08, max_step=0.4, timeout=60):
         """Continuously steer toward target using proportional control at 20 Hz.
 
         kp:       gain mapping normalized offset [-1, 1] to meters of lookahead
