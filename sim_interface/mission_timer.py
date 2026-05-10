@@ -20,6 +20,7 @@ class MissionTimer(Node):
     def __init__(self):
         super().__init__('mission_timer')
         self._takeoff_time = None
+        self._airborne = False
         self._done = False
         self._prompt = ''
         self._ai_mode = False
@@ -38,15 +39,24 @@ class MissionTimer(Node):
         print('Mission timer ready. Waiting for takeoff...')
 
     def _prompt_cb(self, msg):
+        if msg.data.lower() == 'stop':
+            return
         self._prompt = msg.data
 
     def _ai_mode_cb(self, msg):
         self._ai_mode = msg.data
 
     def _pose_cb(self, msg):
-        if self._takeoff_time is None and msg.pose.position.z > TAKEOFF_ALT_THRESHOLD:
+        alt = msg.pose.position.z
+        if not self._airborne and alt > TAKEOFF_ALT_THRESHOLD:
+            self._airborne = True
             self._takeoff_time = time.time()
-            print(f'[TAKEOFF] Detected at z={msg.pose.position.z:.2f} m — timer started.')
+            print(f'[TAKEOFF] Detected at z={alt:.2f} m — timer started.')
+        elif self._airborne and alt < TAKEOFF_ALT_THRESHOLD:
+            self._airborne = False
+            self._takeoff_time = None
+            self._done = False
+            print('\n[LANDED] Ready for next run. Waiting for takeoff...')
 
     def _found_cb(self, msg):
         if msg.data and self._takeoff_time is not None and not self._done:
