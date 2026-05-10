@@ -6,6 +6,7 @@ Run detectors (YOLOWorld, LLM client, etc.) on the ground station.
 """
 
 import os
+import signal
 import time
 import threading
 import socket
@@ -99,7 +100,10 @@ class UdpRelay(Node):
     def _terminate_mission(self):
         """Safely terminate the lawnmower process."""
         if self.mission_process and self.mission_process.poll() is None:
-            self.mission_process.terminate()
+            try:
+                os.killpg(os.getpgid(self.mission_process.pid), signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                self.mission_process.terminate()
             self.mission_process = None
         self.tracking_started = False
 
@@ -189,6 +193,7 @@ class UdpRelay(Node):
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         env=os.environ.copy(),
+                        start_new_session=True,
                     )
                     threading.Thread(target=self._log_proc, args=(self.mission_process,), daemon=True).start()
                     self.get_logger().info(f"[LAWNMOWER] Process spawned with PID={self.mission_process.pid}")
@@ -237,6 +242,7 @@ class UdpRelay(Node):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     env=os.environ.copy(),
+                    start_new_session=True,
                 )
                 threading.Thread(target=self._log_proc, args=(self.mission_process,), daemon=True).start()
 
