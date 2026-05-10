@@ -163,7 +163,7 @@ class MissionTimer(Node):
             if self._run_ts else ''
         )
         line = (
-            f'[{timestamp}]{prompt_field}{ai_field}'
+            f'* [{timestamp}]{prompt_field}{ai_field}'
             f'  {outcome}: {int(mins)}m {secs:.1f}s  ({elapsed:.1f}s)'
             f'{video_field}\n'
         )
