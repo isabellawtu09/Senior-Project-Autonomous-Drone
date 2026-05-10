@@ -54,6 +54,15 @@ class MissionTimer(Node):
             print(f'[TAKEOFF] Detected at z={alt:.2f} m — timer started.')
         elif self._airborne and alt < TAKEOFF_ALT_THRESHOLD:
             self._airborne = False
+            if not self._done and self._takeoff_time is not None:
+                elapsed = time.time() - self._takeoff_time
+                mins, secs = divmod(elapsed, 60)
+                print()
+                print('==============================')
+                print('  RTL — object NOT found.')
+                print(f'  Time airborne: {int(mins)}m {secs:.1f}s  ({elapsed:.1f}s total)')
+                print('==============================')
+                self._save_result(elapsed, mins, secs, found=False)
             self._takeoff_time = None
             self._done = False
             print('\n[LANDED] Ready for next run. Waiting for takeoff...')
@@ -68,16 +77,17 @@ class MissionTimer(Node):
             print('  Object found!')
             print(f'  Time from takeoff: {int(mins)}m {secs:.1f}s  ({elapsed:.1f}s total)')
             print('==============================')
-            self._save_result(elapsed, mins, secs)
+            self._save_result(elapsed, mins, secs, found=True)
 
-    def _save_result(self, elapsed, mins, secs):
+    def _save_result(self, elapsed, mins, secs, found=True):
         import os
         os.makedirs('metrics', exist_ok=True)
         log_path = 'metrics/mission_times.txt'
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         prompt_field = f'  prompt="{self._prompt}"' if self._prompt else ''
         ai_field = f'  ai_mode={"yes" if self._ai_mode else "no"}'
-        line = f'[{timestamp}]{prompt_field}{ai_field}  Time to detection: {int(mins)}m {secs:.1f}s  ({elapsed:.1f}s)\n'
+        outcome = 'Time to detection' if found else 'NOT FOUND — time airborne'
+        line = f'[{timestamp}]{prompt_field}{ai_field}  {outcome}: {int(mins)}m {secs:.1f}s  ({elapsed:.1f}s)\n'
         with open(log_path, 'a') as f:
             f.write(line)
         print(f'Result saved to {log_path}')

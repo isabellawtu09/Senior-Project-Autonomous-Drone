@@ -1,1 +1,0 @@
-[2026-05-10 11:10:25]  prompt="can"  ai_mode=no  Time to detection: 0m 4.6s  (4.6s)
