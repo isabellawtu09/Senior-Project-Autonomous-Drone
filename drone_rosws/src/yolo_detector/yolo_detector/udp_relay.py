@@ -59,6 +59,7 @@ class UdpRelay(Node):
         self.target_pub = self.create_publisher(String, '/target_object', 10)
         self.tracking_pub = self.create_publisher(Bool, '/object_found', 10)
         self.offset_pub = self.create_publisher(Vector3, '/target_offset', 10)
+        self.ai_mode_pub = self.create_publisher(Bool, '/ai_mode', 10)
         self._last_found_log = 0.0
         self.create_subscription(
             Image,
@@ -161,17 +162,24 @@ class UdpRelay(Node):
 
             self.get_logger().info(f"[CMD] Received: {cmd}")
 
-            # --- ATOMIC TRACKING:prompt command ---
+            # --- ATOMIC TRACKING:<ai_flag>:<prompt> command ---
             if cmd.startswith(b"TRACKING"):
-                parts = cmd.split(b":", 1)
-                if len(parts) == 2:
-                    extracted_prompt = parts[1].decode(errors="ignore").strip()
-                    if extracted_prompt:
-                        self.active_prompt = extracted_prompt
-                        prompt_msg = String()
-                        prompt_msg.data = self.active_prompt
-                        self.target_pub.publish(prompt_msg)
-                        self.get_logger().info(f"TRACKING prompt set atomically: '{self.active_prompt}'")
+                parts = cmd.split(b":", 2)
+                if len(parts) == 3 and parts[1] in (b"0", b"1"):
+                    ai_active = parts[1] == b"1"
+                    extracted_prompt = parts[2].decode(errors="ignore").strip()
+                else:
+                    ai_active = False
+                    extracted_prompt = parts[1].decode(errors="ignore").strip() if len(parts) == 2 else ""
+                if extracted_prompt:
+                    self.active_prompt = extracted_prompt
+                    prompt_msg = String()
+                    prompt_msg.data = self.active_prompt
+                    self.target_pub.publish(prompt_msg)
+                    ai_msg = Bool()
+                    ai_msg.data = ai_active
+                    self.ai_mode_pub.publish(ai_msg)
+                    self.get_logger().info(f"TRACKING prompt set atomically: '{self.active_prompt}' ai_mode={ai_active}")
 
                 if not self.active_prompt:
                     self.get_logger().warn("Ignoring TRACKING: no active target prompt set yet.")

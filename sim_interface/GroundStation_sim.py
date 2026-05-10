@@ -638,7 +638,8 @@ class GroundStation(QWidget):
         # This eliminates the race condition between TRACK_PORT (8501) and
         # COMMAND_PORT (8502) by delivering both in a single UDP packet.
         try:
-            atomic_cmd = f"TRACKING:{user_input}".encode()
+            ai_flag = "1" if self.ai_toggle.isChecked() else "0"
+            atomic_cmd = f"TRACKING:{ai_flag}:{user_input}".encode()
             commandSock.sendto(atomic_cmd, (drone_ip, COMMANDPORT))
             self.append_log(f"[NETWORK] Atomic TRACKING command sent to drone at {drone_ip}")
         except Exception as e:

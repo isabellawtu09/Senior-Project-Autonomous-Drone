@@ -9,7 +9,7 @@ Run alongside the sim (with ROS environment sourced):
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from geometry_msgs.msg import PoseStamped
 import time
 
@@ -21,6 +21,8 @@ class MissionTimer(Node):
         super().__init__('mission_timer')
         self._takeoff_time = None
         self._done = False
+        self._prompt = ''
+        self._ai_mode = False
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -30,8 +32,16 @@ class MissionTimer(Node):
 
         self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._pose_cb, qos)
         self.create_subscription(Bool, '/object_found', self._found_cb, 10)
+        self.create_subscription(String, '/target_object', self._prompt_cb, 10)
+        self.create_subscription(Bool, '/ai_mode', self._ai_mode_cb, 10)
 
         print('Mission timer ready. Waiting for takeoff...')
+
+    def _prompt_cb(self, msg):
+        self._prompt = msg.data
+
+    def _ai_mode_cb(self, msg):
+        self._ai_mode = msg.data
 
     def _pose_cb(self, msg):
         if self._takeoff_time is None and msg.pose.position.z > TAKEOFF_ALT_THRESHOLD:
@@ -55,7 +65,9 @@ class MissionTimer(Node):
         os.makedirs('metrics', exist_ok=True)
         log_path = 'metrics/mission_times.txt'
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-        line = f'[{timestamp}]  Time to detection: {int(mins)}m {secs:.1f}s  ({elapsed:.1f}s)\n'
+        prompt_field = f'  prompt="{self._prompt}"' if self._prompt else ''
+        ai_field = f'  ai_mode={"yes" if self._ai_mode else "no"}'
+        line = f'[{timestamp}]{prompt_field}{ai_field}  Time to detection: {int(mins)}m {secs:.1f}s  ({elapsed:.1f}s)\n'
         with open(log_path, 'a') as f:
             f.write(line)
         print(f'Result saved to {log_path}')
