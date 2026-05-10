@@ -5,7 +5,7 @@ build/
 devel/
 install/
 log/
-
+sim_interface/metrics/videos
 __pycache__/
 *.pyc
 
