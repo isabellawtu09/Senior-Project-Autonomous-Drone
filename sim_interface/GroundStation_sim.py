@@ -7,7 +7,6 @@ import threading
 import numpy as np
 import cv2
 import torch
-import torch.nn.functional as F
 import torchvision.transforms as T
 import PyQt6
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QTextEdit, QCheckBox
@@ -33,8 +32,14 @@ commandSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 frame_queue = queue.Queue(maxsize=2)
 
 def get_local_ip():
-
-    IP = '127.0.0.1'
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
     return IP
 
 
@@ -108,134 +113,94 @@ def dominant_hue(crop_bgr):
         return -1
     return int(np.median(hues))
 
-# --- 2. INFERENCE THREAD ---
+# --- 2. INFERENCE THREAD (Multi-Object Tracker + HSV Color Filtering) ---
 class InferenceThread(QThread):
     change_pixmap_signal = pyqtSignal(QImage)
     state_change_signal = pyqtSignal(str)
     log_signal = pyqtSignal(str)
-
-    _REID_TRANSFORM = T.Compose([
-        T.ToTensor(),
-        T.Resize((256, 128)),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
 
     ACCEPT_THRESHOLD = 0.55
     UPDATE_GATE = 0.85
 
     def __init__(self):
         super().__init__()
-        self.model            = None
-        self.reid_model       = None
-        self.target_bbox      = None
-        self.target_id        = None
-        self.target_embedding = None
-        self.target_hsv_hist  = None
-        self.target_dominant_hue = -1
-        self.is_tracking      = False
-        self.track_lock       = threading.Lock()
+        self.model               = None
+        self.target_bbox         = None
+        self.tracks              = {}  
+        self.next_track_id       = 1
+        self.master_hsv_hist     = None
+        self.master_dominant_hue = -1
+        self.is_tracking         = False
+        self.use_hsv             = False  
+        self.track_lock          = threading.Lock()
 
     def _load_model(self):
         self.log_signal.emit("[YOLO] Loading YOLO-World...")
         self.model = YOLO("yolov8m-world.pt")
         self.log_signal.emit("[YOLO] Model ready.")
-        self._load_reid()
-
-    def _load_reid(self):
-        try:
-            import torchreid
-            self.reid_model = torchreid.models.build_model(
-                name='osnet_x0_25', num_classes=1000, pretrained=True
-            )
-            self.reid_model.eval()
-            self.log_signal.emit("[ReID] OSNet loaded.")
-        except Exception as e:
-            self.reid_model = None
-            self.log_signal.emit(f"[ReID] Not available ({e}). HSV-only mode.")
-
-    def _get_embedding(self, crop_bgr):
-        if self.reid_model is None or crop_bgr is None or crop_bgr.size == 0:
-            return None
-        try:
-            rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-            t = self._REID_TRANSFORM(rgb).unsqueeze(0)
-            with torch.no_grad():
-                emb = self.reid_model(t)
-            return F.normalize(emb, dim=1)
-        except Exception:
-            return None
-
-    def _cosine_sim(self, a, b):
-        if a is None or b is None:
-            return 0.0
-        return F.cosine_similarity(a, b).item()
 
     def _hue_veto(self, cand_hue):
-        if self.target_dominant_hue < 0 or cand_hue < 0:
+        if self.master_dominant_hue < 0 or cand_hue < 0:
             return False
-        diff = abs(self.target_dominant_hue - cand_hue)
+        diff = abs(self.master_dominant_hue - cand_hue)
         diff = min(diff, 180 - diff)   
         return diff > 20
 
-    def _appearance_score(self, crop_bgr):
-        hue_sim = hue_similarity(self.target_hsv_hist, compute_hue_histogram(crop_bgr))
-        if self.reid_model is not None and self.target_embedding is not None:
-            emb      = self._get_embedding(crop_bgr)
-            reid_sim = self._cosine_sim(self.target_embedding, emb)
-            return 0.5 * hue_sim + 0.5 * reid_sim, hue_sim, reid_sim
-        return hue_sim, hue_sim, None
-
     def _update_references(self, crop_bgr):
         new_hue = compute_hue_histogram(crop_bgr)
-        if new_hue is not None and self.target_hsv_hist is not None:
-            if hue_similarity(self.target_hsv_hist, new_hue) > self.UPDATE_GATE:
-                self.target_hsv_hist = 0.95 * self.target_hsv_hist + 0.05 * new_hue
-                n = self.target_hsv_hist.sum()
+        if new_hue is not None and self.master_hsv_hist is not None:
+            if hue_similarity(self.master_hsv_hist, new_hue) > self.UPDATE_GATE:
+                self.master_hsv_hist = 0.95 * self.master_hsv_hist + 0.05 * new_hue
+                n = self.master_hsv_hist.sum()
                 if n > 1e-6:
-                    self.target_hsv_hist /= n
-
-        new_emb = self._get_embedding(crop_bgr)
-        if new_emb is not None and self.target_embedding is not None:
-            if self._cosine_sim(self.target_embedding, new_emb) > self.UPDATE_GATE:
-                self.target_embedding = F.normalize(
-                    0.95 * self.target_embedding + 0.05 * new_emb, dim=1
-                )
+                    self.master_hsv_hist /= n
 
     def _set_classes(self, class_list):
         if self.model is not None and len(class_list) > 0:
-            combined = list(dict.fromkeys(class_list + ["object"]))
+            combined = list(dict.fromkeys(class_list[:2] + ["object"]))
+            
+            if torch.backends.mps.is_available():
+                self.model.to('cpu')
+                
             self.model.set_classes(combined)
+            
+            if global_latest_frame is not None:
+                dummy = cv2.resize(global_latest_frame, (640, 640))
+                device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+                self.model.to(device)
+                self.model.predict(dummy, verbose=False, conf=0.25, device=device)
             self.log_signal.emit(f"[YOLO] Classes set: {combined}")
 
-    def start_cv_tracker(self, frame, bbox, yolo_terms, preserve_appearance=False):
+    def start_cv_tracker(self, frame, bbox, yolo_terms, preserve_appearance=False, use_hsv=False):
         with self.track_lock:
             self.target_bbox = tuple(map(int, bbox)) if bbox else None
-            self.target_id   = None
+            self.tracks = {}
+            self.next_track_id = 1
+            self.use_hsv = use_hsv
+            
             if not preserve_appearance:
-                self.target_embedding    = None
-                self.target_hsv_hist     = None
-                self.target_dominant_hue = -1
+                self.master_hsv_hist     = None
+                self.master_dominant_hue = -1
             self._set_classes(yolo_terms)
             self.is_tracking = True
             
             search_area = self.target_bbox if self.target_bbox else "Full Frame"
-            self.log_signal.emit(f"[TRACKER] Latching to search area: {search_area}")
+            self.log_signal.emit(f"[TRACKER] Multi-Object Tracking | Initial Latch Area: {search_area} | HSV Color Filtering: {'ON' if use_hsv else 'OFF'}")
 
     def stop_cv_tracker(self):
         with self.track_lock:
             self.is_tracking = False
             self.target_bbox = None
-            self.target_id = None
-            self.target_embedding = None
-            self.target_hsv_hist = None
-            self.target_dominant_hue = -1
+            self.tracks = {}
+            self.master_hsv_hist = None
+            self.master_dominant_hue = -1
             self._set_classes([])
 
     def run(self):
         global global_latest_frame, drone_ip
         current_state = "IDLE"
-        last_seen = 0
         self._load_model()
+        device = 'mps' if torch.backends.mps.is_available() else 'cpu'
 
         while True:
             frame = frame_queue.get()
@@ -244,164 +209,165 @@ class InferenceThread(QThread):
             with frame_write_lock:
                 global_latest_frame = frame.copy()
 
-            found = False
+            found_any = False
+            recovering_any = False
+            any_last_seen = 0
 
             with self.track_lock:
                 if self.is_tracking and self.model is not None:
                     try:
-                        results  = self.model.predict(frame, verbose=False, conf=0.03)[0]
+                        self.model.to(device)
+                        frame_h, frame_w = frame.shape[:2]
+                        small = cv2.resize(frame, (640, 640))
+                        scale_x = frame_w / 640.0
+                        scale_y = frame_h / 640.0
+                        
+                        results  = self.model.predict(small, verbose=False, conf=0.25, device=device)[0]
                         num_raw  = len(results.boxes) if results.boxes is not None else 0
-                        all_boxes = results.boxes.xyxy.cpu().numpy() if num_raw > 0 else []
-                        all_confs = results.boxes.conf.cpu().numpy() if num_raw > 0 else []
-
-                        has_ref = (self.target_hsv_hist is not None or self.target_embedding is not None)
-
-                        # STAGE 1 — LATCH
-                        if self.target_id is None:
-                            if self.target_bbox is not None:
-                                tx = self.target_bbox[0] + self.target_bbox[2] // 2
-                                ty = self.target_bbox[1] + self.target_bbox[3] // 2
-                                cv2.drawMarker(frame, (tx, ty), (255, 255, 0), cv2.MARKER_CROSS, 30, 3)
-
-                            if num_raw > 0:
-                                best_i, best_conf = None, -1
-                                for i in range(len(all_boxes)):
-                                    bx1, by1, bx2, by2 = all_boxes[i]
-                                    
-                                    # Zone check applies if we have a bbox. Otherwise, accept highest confidence anywhere.
-                                    if self.target_bbox is not None:
-                                        margin_x = max(30, self.target_bbox[2] // 3)
-                                        margin_y = max(30, self.target_bbox[3] // 3)
-                                        in_zone = ((bx1 - margin_x) <= tx <= (bx2 + margin_x) and
-                                                   (by1 - margin_y) <= ty <= (by2 + margin_y))
-                                    else:
-                                        in_zone = True
-
-                                    if in_zone and all_confs[i] > best_conf:
-                                        best_conf = all_confs[i]
-                                        best_i = i
-
-                                if best_i is not None:
-                                    bx1, by1, bx2, by2 = map(int, all_boxes[best_i])
-                                    crop = frame[by1:by2, bx1:bx2]
-                                    cand_hue = dominant_hue(crop)
-
-                                    latch_ok = True
-                                    if has_ref:
-                                        app, hsv_s, reid_s = self._appearance_score(crop)
-                                        if app < self.ACCEPT_THRESHOLD:
-                                            latch_ok = False
-
-                                    if latch_ok:
-                                        self.target_bbox = (bx1, by1, bx2 - bx1, by2 - by1)
-                                        self.target_id   = 1
-                                        if self.target_hsv_hist is None:
-                                            self.target_hsv_hist = compute_hue_histogram(crop)
-                                        if self.target_embedding is None:
-                                            self.target_embedding = self._get_embedding(crop)
-                                        self.target_dominant_hue = cand_hue
-                                        mode = "ReID+HSV" if self.target_embedding is not None else "HSV only"
-                                        self.log_signal.emit(f"[TRACKER] LATCHED ({bx1},{by1},{bx2},{by2}) conf={best_conf:.2f} [{mode}]")
-
-                        # STAGE 2 — PERSIST
-                        elif self.target_id is not None and self.target_bbox is not None:
-                            tbx1, tby1 = self.target_bbox[0], self.target_bbox[1]
-                            tbx2, tby2 = tbx1 + self.target_bbox[2], tby1 + self.target_bbox[3]
-                            multi = len(all_boxes) > 1
-
-                            best_i, best_score = None, -1.0
-                            best_app, best_hsv = 0.0, 0.0
-
+                        
+                        valid_boxes = []
+                        if num_raw > 0:
+                            raw_boxes = results.boxes.xyxy.cpu().numpy()
+                            all_boxes = raw_boxes * [scale_x, scale_y, scale_x, scale_y]
+                            all_confs = results.boxes.conf.cpu().numpy()
                             for i in range(len(all_boxes)):
-                                bx1, by1, bx2, by2 = all_boxes[i]
-                                ix1, iy1 = max(tbx1, bx1), max(tby1, by1)
-                                ix2, iy2 = min(tbx2, bx2), min(tby2, by2)
-                                inter  = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-                                area_a = max(1, (tbx2 - tbx1) * (tby2 - tby1))
-                                area_b = max(1, (bx2 - bx1) * (by2 - by1))
-                                iou    = inter / (area_a + area_b - inter + 1e-6)
+                                if all_confs[i] > 0.05:
+                                    bx1, by1, bx2, by2 = map(int, all_boxes[i])
+                                    crop = frame[max(0,by1):min(frame_h,by2), max(0,bx1):min(frame_w,bx2)]
+                                    valid_boxes.append((bx1, by1, bx2 - bx1, by2 - by1, all_confs[i], crop))
 
-                                crop = frame[int(by1):int(by2), int(bx1):int(bx2)]
+                        # --- STAGE 0: MASTER COLOR LATCHING ---
+                        if self.use_hsv and self.master_hsv_hist is None and self.target_bbox is not None:
+                            tx = self.target_bbox[0] + self.target_bbox[2] // 2
+                            ty = self.target_bbox[1] + self.target_bbox[3] // 2
+                            
+                            best_i, best_conf = None, -1
+                            for i, (bx1, by1, bw, bh, conf, crop) in enumerate(valid_boxes):
+                                margin_x, margin_y = max(30, self.target_bbox[2] // 3), max(30, self.target_bbox[3] // 3)
+                                in_zone = ((bx1 - margin_x) <= tx <= (bx1 + bw + margin_x) and
+                                           (by1 - margin_y) <= ty <= (by1 + bh + margin_y))
+                                if in_zone and conf > best_conf:
+                                    best_conf, best_i = conf, i
+                                    
+                            if best_i is not None:
+                                _, _, _, _, _, crop = valid_boxes[best_i]
+                                self.master_hsv_hist = compute_hue_histogram(crop)
+                                self.master_dominant_hue = dominant_hue(crop)
+                                self.log_signal.emit(f"[TRACKER] Master HSV Signature Extracted. Building swarm profile.")
 
+                        has_ref = self.use_hsv and (self.master_hsv_hist is not None)
+
+                        matched_track_ids = set()
+                        matched_box_indices = set()
+
+                        # --- STAGE 1: UPDATE EXISTING TRACKS ---
+                        for box_idx, (x, y, w, h, conf, crop) in enumerate(valid_boxes):
+                            best_iou = 0
+                            best_tid = None
+                            for tid, track in self.tracks.items():
+                                if tid in matched_track_ids: continue
+                                
+                                tx, ty, tw, th = track['bbox']
+                                ix1, iy1 = max(x, tx), max(y, ty)
+                                ix2, iy2 = min(x + w, tx + tw), min(y + h, ty + th)
+                                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                                iou = inter / (w * h + tw * th - inter + 1e-6)
+
+                                if iou > best_iou:
+                                    best_iou, best_tid = iou, tid
+
+                            if best_iou > 0.10:
+                                self.tracks[best_tid]['bbox'] = (x, y, w, h)
+                                self.tracks[best_tid]['last_seen'] = time.time()
+                                self.tracks[best_tid]['conf'] = conf
+                                matched_track_ids.add(best_tid)
+                                matched_box_indices.add(box_idx)
+                                
+                                if has_ref:
+                                    self._update_references(crop)
+
+                        # --- STAGE 2: REGISTER NEW OBJECTS ENTERING FRAME ---
+                        for box_idx, (x, y, w, h, conf, crop) in enumerate(valid_boxes):
+                            if box_idx not in matched_box_indices:
+                                is_valid_new_target = False
+                                
                                 if has_ref:
                                     cand_hue = dominant_hue(crop)
-                                    if self._hue_veto(cand_hue):
-                                        continue
-                                    app, hue_s, reid_s = self._appearance_score(crop)
-                                    score = 0.3 * iou + 0.7 * app if multi else app
-                                else:
-                                    score = iou
+                                    if not self._hue_veto(cand_hue):
+                                        app_score = hue_similarity(self.master_hsv_hist, compute_hue_histogram(crop))
+                                        if app_score > self.ACCEPT_THRESHOLD:
+                                            is_valid_new_target = True
+                                elif conf > 0.10:
+                                    is_valid_new_target = True
 
-                                if score > best_score:
-                                    best_score = score
-                                    best_i     = i
-                                    if has_ref:
-                                        best_app, best_hsv = app, hue_s
+                                if not self.tracks and self.target_bbox is not None and not is_valid_new_target:
+                                    tx, ty, tw, th = self.target_bbox
+                                    ix1, iy1 = max(x, tx), max(y, ty)
+                                    ix2, iy2 = min(x + w, tx + tw), min(y + h, ty + th)
+                                    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                                    iou = inter / (w * h + tw * th - inter + 1e-6)
+                                    if iou > 0.10:
+                                        is_valid_new_target = True
 
-                            threshold = self.ACCEPT_THRESHOLD if has_ref else 0.03
+                                if is_valid_new_target:
+                                    self.tracks[self.next_track_id] = {'bbox': (x,y,w,h), 'last_seen': time.time(), 'conf': conf}
+                                    self.next_track_id += 1
 
-                            if best_i is not None and best_score > threshold:
-                                bx1, by1, bx2, by2 = map(int, all_boxes[best_i])
-                                self.target_bbox = (bx1, by1, bx2 - bx1, by2 - by1)
-                                crop = frame[by1:by2, bx1:bx2]
-                                self._update_references(crop)
+                        # --- STAGE 3: CLEANUP AND DRAW ---
+                        current_time = time.time()
+                        stale_ids = []
 
-                                found = True
-                                last_seen = time.time()
-                                label = f"LOCKED (App:{best_app:.2f})" if has_ref else f"LOCKED (IoU:{best_score:.2f})"
-                                cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 0), 3)
-                                cv2.putText(frame, label, (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        for tid, track in list(self.tracks.items()):
+                            time_since = current_time - track['last_seen']
+                            x, y, w, h = track['bbox']
+                            any_last_seen = max(any_last_seen, track['last_seen'])
+                            
+                            if time_since < 0.2: 
+                                found_any = True
+                                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 3)
+                                cv2.putText(frame, f"ID:{tid} ({track['conf']:.2f})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            elif time_since < 3.0: 
+                                recovering_any = True
+                            else: 
+                                stale_ids.append(tid)
 
-                            elif time.time() - last_seen < 3.0 and last_seen != 0:
-                                bx1, by1 = self.target_bbox[0], self.target_bbox[1]
-                                bx2, by2 = bx1 + self.target_bbox[2], by1 + self.target_bbox[3]
-                                tx, ty = (bx1 + bx2) // 2, (by1 + by2) // 2
+                        for tid in stale_ids:
+                            del self.tracks[tid]
+                            self.log_signal.emit(f"[TRACKER] Dropped ID:{tid} due to occlusion.")
 
-                                grace_ok = True
-                                if has_ref and num_raw > 0:
-                                    for i in range(len(all_boxes)):
-                                        dbx1, dby1, dbx2, dby2 = all_boxes[i]
-                                        if dbx1 <= tx <= dbx2 and dby1 <= ty <= dby2:
-                                            crop = frame[int(dby1):int(dby2), int(dbx1):int(dbx2)]
-                                            cand_hue = dominant_hue(crop)
-                                            app, _, _ = self._appearance_score(crop)
-                                            if self._hue_veto(cand_hue) or app < 0.50:
-                                                last_seen = 0
-                                                grace_ok = False
-                                                break
-
-                                if grace_ok:
-                                    found = True
-                                    cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 215, 255), 2)
-                                    cv2.putText(frame, "HOLDING...", (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 215, 255), 2)
-
-                        if not found and self.is_tracking:
-                            cv2.putText(frame, "RECOVERING...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        if not found_any and not recovering_any and self.is_tracking:
+                            cv2.putText(frame, "RECOVERING / SEARCHING...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
                     except Exception as e:
                         self.log_signal.emit(f"[TRACKER ERROR] {e}")
 
-            # State Logic Machine
-            if found:
-                current_state = "FOUND"
-            elif last_seen != 0 and (time.time() - last_seen < 2):
+            # --- STATE LOGIC MACHINE ---
+            if found_any:
+                active_count = len([t for t in self.tracks.values() if time.time() - t['last_seen'] < 0.2])
+                current_state = f"FOUND ({active_count} Targets)"
+            elif recovering_any:
                 current_state = "LOST (RECOVERING)"
             else:
                 current_state = "TRACKING" if self.is_tracking else "IDLE"
 
-
             self.state_change_signal.emit(current_state)
 
+            # --- DRONE COMMUNICATION ---
             if drone_ip is not None:
-                if found and self.target_bbox is not None:
-                    frame_h, frame_w = frame.shape[:2]
-                    bx1, by1, bw, bh = self.target_bbox
-                    cx = bx1 + bw / 2.0
-                    cy = by1 + bh / 2.0
-                    offset_x = (cx - frame_w / 2.0) / (frame_w / 2.0)
-                    offset_y = (cy - frame_h / 2.0) / (frame_h / 2.0)
-                    cmd = f"FOUND:{offset_x:.4f}:{offset_y:.4f}".encode()
-                    commandSock.sendto(cmd, (drone_ip, COMMANDPORT))
+                if found_any and self.tracks:
+                    active_tracks = [t for t in self.tracks.values() if time.time() - t['last_seen'] < 0.2]
+                    if active_tracks:
+                        primary = active_tracks[0]
+                        frame_h, frame_w = frame.shape[:2]
+                        bx1, by1, bw, bh = primary['bbox']
+                        cx = bx1 + bw / 2.0
+                        cy = by1 + bh / 2.0
+                        offset_x = (cx - frame_w / 2.0) / (frame_w / 2.0)
+                        offset_y = (cy - frame_h / 2.0) / (frame_h / 2.0)
+                        
+                        # CHANGED: YOLO now sends CENTERING instead of FOUND to avoid script conflicts
+                        cmd = f"CENTERING:{offset_x:.4f}:{offset_y:.4f}".encode()
+                        commandSock.sendto(cmd, (drone_ip, COMMANDPORT))
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb.shape
@@ -428,7 +394,7 @@ class AIFinderThread(QThread):
             if snap is None:
                 time.sleep(0.1)
                 continue
-            if time.time() - self.last_call < 2.0:
+            if time.time() - self.last_call < 0.5:
                 time.sleep(0.2)
                 continue
             self.last_call = time.time()
@@ -457,8 +423,8 @@ class GroundStation(QWidget):
         
         self.llm_client = VisionLLMClient()
         self.hunter_thread = None
+        self.current_use_hsv = False
 
-        # Apply Original Global Styling
         self.setStyleSheet("""
             QWidget { background-color: #1e1e2e; font-family: 'Segoe UI', Arial, sans-serif; }
             QLabel#statusLabel { font-size: 16px; font-weight: bold; padding: 10px; background-color: #313244; border-radius: 8px; color: #cdd6f4; }
@@ -621,8 +587,15 @@ class GroundStation(QWidget):
         ]
         self.append_log(f"[SYSTEM] Scaling bounding box: 640x640 -> {live_w}x{live_h}")
 
-        has_ref = (self.inf.target_hsv_hist is not None or self.inf.target_embedding is not None)
-        self.inf.start_cv_tracker(snap_copy, scaled_bbox, yolo_terms, preserve_appearance=has_ref)
+        # CHANGED: Fire the exact string "FOUND" to the drone once the LLM API successfully grabs it
+        try:
+            commandSock.sendto(b"FOUND", (drone_ip, COMMANDPORT))
+            self.append_log(f"[NETWORK] Atomic 'FOUND' command sent to drone at {drone_ip} (via LLM Handoff)")
+        except Exception as e:
+            self.append_log(f"[NETWORK ERROR] Could not contact drone: {e}")
+
+        has_ref = self.inf.master_hsv_hist is not None
+        self.inf.start_cv_tracker(snap_copy, scaled_bbox, yolo_terms, preserve_appearance=has_ref, use_hsv=self.current_use_hsv)
         self.hunter_thread = None 
 
     def start_tracking(self): 
@@ -634,16 +607,16 @@ class GroundStation(QWidget):
 
         self.stop_tracking()
 
-        # --- ATOMIC COMMAND: send prompt embedded in TRACKING command ---
-        # This eliminates the race condition between TRACK_PORT (8501) and
-        # COMMAND_PORT (8502) by delivering both in a single UDP packet.
         try:
-            ai_flag = "1" if self.ai_toggle.isChecked() else "0"
-            atomic_cmd = f"TRACKING:{ai_flag}:{user_input}".encode()
+            atomic_cmd = f"TRACKING:{user_input}".encode()
             commandSock.sendto(atomic_cmd, (drone_ip, COMMANDPORT))
             self.append_log(f"[NETWORK] Atomic TRACKING command sent to drone at {drone_ip}")
         except Exception as e:
             self.append_log(f"[NETWORK ERROR] Could not contact drone: {e}")
+
+        KNOWN_COLORS = ["red", "blue", "green", "yellow", "orange", "purple", "pink", "black", "white", "brown", "grey", "gray", "cyan", "magenta", "maroon"]
+        user_words = user_input.lower().replace(',', ' ').replace('.', ' ').split()
+        self.current_use_hsv = any(color in user_words for color in KNOWN_COLORS)
 
         if not self.ai_toggle.isChecked() or not self.llm_client.is_configured():
             if self.ai_toggle.isChecked() and not self.llm_client.is_configured():
@@ -652,7 +625,7 @@ class GroundStation(QWidget):
             
             with frame_write_lock:
                 snap_copy = global_latest_frame.copy() if global_latest_frame is not None else None
-            self.inf.start_cv_tracker(snap_copy, None, [user_input.lower()], preserve_appearance=False)
+            self.inf.start_cv_tracker(snap_copy, None, [user_input.lower()], preserve_appearance=False, use_hsv=self.current_use_hsv)
             return
 
         self.hunter_thread = AIFinderThread(self.llm_client, user_input)
@@ -663,6 +636,7 @@ class GroundStation(QWidget):
     def stop_tracking(self):
         if self.hunter_thread is not None and self.hunter_thread.isRunning():
             self.hunter_thread.stop()
+            self.hunter_thread.wait()  
             self.append_log("[SYSTEM] Aborting background AI Hunter.")
             self.hunter_thread = None
 
