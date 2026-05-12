@@ -208,6 +208,26 @@ class UdpRelay(Node):
                 else:
                     self.get_logger().warn("[LAWNMOWER] Already running, ignoring duplicate TRACKING command.")
 
+            elif cmd.startswith(b"CENTERING"):
+                parts = cmd.decode(errors="ignore").split(":")
+                if len(parts) == 3:
+                    try:
+                        offset_x = float(parts[1])
+                        offset_y = float(parts[2])
+                    except ValueError:
+                        continue
+                    self.publish_object_found(True)
+                    offset_msg = Vector3()
+                    offset_msg.x = offset_x
+                    offset_msg.y = offset_y
+                    self.offset_pub.publish(offset_msg)
+                    now = time.time()
+                    if now - self._last_found_log > 1.0:
+                        self.get_logger().info(f"[CENTERING] offset=({offset_x:.3f}, {offset_y:.3f})")
+                        self._last_found_log = now
+                    if self.tracking_started:
+                        threading.Thread(target=self._graceful_stop, daemon=True).start()
+
             elif cmd.startswith(b"FOUND"):
                 parts = cmd.decode(errors="ignore").split(":")
                 if len(parts) == 3:

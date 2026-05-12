@@ -193,6 +193,27 @@
 
 
     <include>
+      <name>hot_dog</name>
+      <uri>model://hot_dog</uri>
+      <pose>-2.5 1.5 0 0 0 0.8</pose>
+      <static>true</static>
+    </include>
+
+    <include>
+      <name>Banana</name>
+      <uri>https://fuel.gazebosim.org/1.0/mjcarroll/models/Banana for Scale</uri>
+      <pose>1.5 3.5 0 0 0 0</pose>
+      <static>true</static>
+    </include>
+
+    <include>
+      <name>ACE_Coffee_Mug_Kristen_16_oz_cup</name>
+      <uri>model://ACE_Coffee_Mug_Kristen_16_oz_cup</uri>
+      <pose>3.0 1.5 0 0 0 0.5</pose>
+      <static>true</static>
+    </include>
+
+    <include>
       <uri>model://runway</uri>
       <pose degrees="true">-29 545 0 0 0 363</pose>
     </include>
