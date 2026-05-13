@@ -89,8 +89,21 @@
 * [2026-05-11 20:16:47]  prompt="book that the boy is reading"  ai_mode=no  NOT FOUND — time airborne: 2m 29.2s  (149.2s)  [2026-05-11_20-14-18.mp4](videos/2026-05-11_20-14-18.mp4)
 * [2026-05-11 20:20:02]  prompt="book that the boy is reading"  ai_mode=no  NOT FOUND — time airborne: 2m 32.9s  (152.9s)  [2026-05-11_20-17-29.mp4](videos/2026-05-11_20-17-29.mp4)
 
+## Red Fruit
 
-* [2026-05-11 20:23:03]  prompt="red fruit"  ai_mode=no  Time to detection: 2m 29.3s  (149.3s)  [2026-05-11_20-20-34.mp4](videos/2026-05-11_20-20-34.mp4)
+* [2026-05-11 20:23:03]  prompt="red fruit"  ai_mode=no  NOT FOUND - time airborne: 2m 29.3s  (149.3s)  [2026-05-11_20-20-34.mp4](videos/2026-05-11_20-20-34.mp4)
 * [2026-05-11 20:23:52]  prompt="red fruit"  ai_mode=no  Time to detection: 0m 1.1s  (1.1s)  [2026-05-11_20-23-51.mp4](videos/2026-05-11_20-23-51.mp4)
 * [2026-05-11 20:26:48]  prompt="red fruit"  ai_mode=no  Time to detection: 0m 37.2s  (37.2s)  [2026-05-11_20-26-11.mp4](videos/2026-05-11_20-26-11.mp4)
 * [2026-05-11 20:31:48]  prompt="red fruit"  ai_mode=no  NOT FOUND — time airborne: 2m 30.9s  (150.9s)  [2026-05-11_20-29-17.mp4](videos/2026-05-11_20-29-17.mp4)
+* [2026-05-11 20:40:49]  prompt="red fruit"  ai_mode=no  NOT FOUND — time airborne: 2m 34.5s  (154.5s)  [2026-05-11_20-38-15.mp4](videos/2026-05-11_20-38-15.mp4)
+
+## Yellow Fruit
+* [2026-05-11 20:42:00]  prompt="yellow fruit"  ai_mode=no  Time to detection: 0m 9.1s  (9.1s)  [2026-05-11_20-41-51.mp4](videos/2026-05-11_20-41-51.mp4)
+    * Found Wrong Object
+* [2026-05-11 20:44:33]  prompt="yellow fruit"  ai_mode=no  Time to detection: 0m 9.1s  (9.1s)  [2026-05-11_20-44-23.mp4](videos/2026-05-11_20-44-23.mp4)
+    * Found Wrong Object
+* [2026-05-11 20:46:26]  prompt="yellow fruit"  ai_mode=no  Time to detection: 0m 17.9s  (17.9s)  [2026-05-11_20-46-08.mp4](videos/2026-05-11_20-46-08.mp4)
+* [2026-05-11 20:49:08]  prompt="yellow fruit"  ai_mode=no  Time to detection: 0m 18.9s  (18.9s)  [2026-05-11_20-48-49.mp4](videos/2026-05-11_20-48-49.mp4)
+* [2026-05-11 20:51:54]  prompt="yellow fruit"  ai_mode=no  Time to detection: 0m 44.5s  (44.5s)  [2026-05-11_20-51-10.mp4](videos/2026-05-11_20-51-10.mp4)
+* [2026-05-13 00:23:23]  prompt="water bottle"  ai_mode=no  Time to detection: 0m 9.1s  (9.1s)
+* [2026-05-13 00:24:16]  prompt="sunglasses"  ai_mode=no  Time to detection: 0m 8.3s  (8.3s)
