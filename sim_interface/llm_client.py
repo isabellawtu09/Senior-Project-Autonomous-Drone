@@ -67,7 +67,7 @@ If not visible: found=false, confidence=0, x1=0, y1=0, x2=0, y2=0, yolo_terms=[]
 """
 
         payload = {
-            "model": "gpt-4o",
+            "model": "gpt-5.2",
             "temperature": 0.0,
             "response_format": {"type": "json_object"},
             "messages": [
