@@ -5,10 +5,14 @@ build/
 devel/
 install/
 log/
-
+sim_interface/metrics/videos
 __pycache__/
 *.pyc
 
 .vscode/
 .project
 .cproject
+.env
+.env.*
+!.env.example
+yolov8m-world.pt

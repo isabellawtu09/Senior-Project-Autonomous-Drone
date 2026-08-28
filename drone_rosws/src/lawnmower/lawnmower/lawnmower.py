@@ -23,35 +23,39 @@ from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from geometry_msgs.msg import PoseStamped
 from geographic_msgs.msg import GeoPointStamped
 from std_msgs.msg import Bool
+from geometry_msgs.msg import Vector3
 
 import time
 import math
 
 # ─── Pattern Configuration ────────────────────────────────────────────────────
-TAKEOFF_ALT   = 4.0    # meters
-CRUISE_ALT    = 4.0    # meters AGL during pattern
-AREA_WIDTH    = 8.0    # meters (X axis, direction of sweeps)
-AREA_HEIGHT   = 8.0    # meters (Y axis, cross-track spacing total)
+TAKEOFF_ALT   = 2.0    # meters
+CRUISE_ALT    = 2.0    # meters AGL during pattern
+# Keep sweep safely inside 15x15 walls (walls are around +/-7.55).
+X_MIN         = -6.0
+X_MAX         = 6.0
+Y_MIN         = -6.0
+Y_MAX         = 6.0
 LANE_SPACING  = 2.0    # meters between rows
 WAYPOINT_TOL  = 0.5    # meters - acceptance radius for each waypoint
 SETPOINT_RATE = 20.0   # Hz - rate to publish setpoints
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def generate_boustrophedon(width, height, spacing, altitude):
+def generate_boustrophedon_bounds(x_min, x_max, y_min, y_max, spacing, altitude):
     """
-    Generate boustrophedon waypoints starting at local origin (0,0).
+    Generate boustrophedon waypoints within fixed XY bounds.
     Returns list of (x, y, z) tuples.
     """
     waypoints = []
-    y = 0.0
+    y = y_min
     direction = 1  # 1 = forward (+X), -1 = reverse (-X)
 
-    while y <= height + 1e-6:
-        x_start = 0.0 if direction == 1 else width
-        x_end   = width if direction == 1 else 0.0
+    while y <= y_max + 1e-6:
+        x_start = x_min if direction == 1 else x_max
+        x_end = x_max if direction == 1 else x_min
         waypoints.append((x_start, y, altitude))
-        waypoints.append((x_end,   y, altitude))
+        waypoints.append((x_end, y, altitude))
         y += spacing
         direction *= -1
 
@@ -61,6 +65,8 @@ def generate_boustrophedon(width, height, spacing, altitude):
 class BoustrophedonNode(Node):
     def __init__(self):
         super().__init__('boustrophedon_node')
+        self.declare_parameter('return_home_only', False)
+        self.return_home_only = bool(self.get_parameter('return_home_only').value)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -71,10 +77,18 @@ class BoustrophedonNode(Node):
         self.state = State()
         self.current_pose = PoseStamped()
         self.tracking_active = False
+        self.rtl_commanded = False
+        self.target_offset = None
+        self.home_captured = False
+        self.home_x = 0.0
+        self.home_y = 0.0
+        self.home_z = 0.0
 
         self.create_subscription(State, '/mavros/state', self._state_cb, qos)
         self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._pose_cb, qos)
         self.create_subscription(Bool, '/object_found', self._tracking_cb, 10)
+        self.create_subscription(Bool, '/command_rtl', self._rtl_cb, 10)
+        self.create_subscription(Vector3, '/target_offset', self._offset_cb, 10)
 
         self.setpoint_pub = self.create_publisher(PoseStamped, '/mavros/setpoint_position/local', 10)
 
@@ -103,13 +117,79 @@ class BoustrophedonNode(Node):
         return sp
     
     def _tracking_cb(self, msg):
-        self.tracking_active = msg.data
-        if self.tracking_active:
+        if msg.data and not self.tracking_active:
             self.get_logger().info('Object found! Stopping pattern.')
+        self.tracking_active = msg.data
+
+    def _rtl_cb(self, msg):
+        if msg.data:
+            self.rtl_commanded = True
+            self.get_logger().info('RTL commanded.')
+
+    def _offset_cb(self, msg):
+        self.target_offset = (msg.x, msg.y)
+
+    def _approach_target(self, kp=0.8, dead_zone=0.08, max_step=0.4, timeout=60):
+        """Continuously steer toward target using proportional control at 20 Hz.
+
+        kp:       gain mapping normalized offset [-1, 1] to meters of lookahead
+        dead_zone: normalized offset below which the target is considered centered
+        max_step: cap on lookahead distance in meters to prevent overshooting
+        """
+        self.get_logger().info('Approaching target...')
+        rate_sec = 1.0 / SETPOINT_RATE
+
+        # Wait up to 3 s for the first offset reading before giving up
+        wait_start = time.time()
+        while self.target_offset is None and time.time() - wait_start < 3.0:
+            rclpy.spin_once(self, timeout_sec=0.1)
+        if self.target_offset is None:
+            self.get_logger().warn('No target offset received. Aborting approach.')
+            return
+
+        # Seed the EMA with the first reading
+        smooth_ox, smooth_oy = self.target_offset
+        alpha = 0.3  # EMA weight for new measurements — lower = smoother but laggier
+        start = time.time()
+
+        while time.time() - start < timeout:
+            if self.rtl_commanded:
+                return
+            rclpy.spin_once(self, timeout_sec=rate_sec)
+
+            if self.target_offset is None:
+                continue
+
+            ox, oy = self.target_offset
+            smooth_ox = alpha * ox + (1.0 - alpha) * smooth_ox
+            smooth_oy = alpha * oy + (1.0 - alpha) * smooth_oy
+
+            self.get_logger().info(f'  offset=({smooth_ox:.3f}, {smooth_oy:.3f})')
+
+            if abs(smooth_ox) < dead_zone and abs(smooth_oy) < dead_zone:
+                self.get_logger().info('Target centered. Holding.')
+                return
+
+            p = self.current_pose.pose.position
+            # Camera frame → drone frame: ox shifts left/right (drone Y), oy shifts forward/back (drone X)
+            dx = -smooth_oy * kp
+            dy = -smooth_ox * kp
+
+            magnitude = math.sqrt(dx**2 + dy**2)
+            if magnitude > max_step:
+                dx = dx / magnitude * max_step
+                dy = dy / magnitude * max_step
+
+            sp = self._make_setpoint(p.x + dx, p.y + dy, p.z)
+            sp.header.stamp = self.get_clock().now().to_msg()
+            self.setpoint_pub.publish(sp)
 
     def _distance_to(self, x, y, z):
         p = self.current_pose.pose.position
         return math.sqrt((p.x - x)**2 + (p.y - y)**2 + (p.z - z)**2)
+
+    def _altitude_error(self, target_z):
+        return abs(self.current_pose.pose.position.z - target_z)
 
     def _spin_for(self, seconds):
         end = time.time() + seconds
@@ -154,6 +234,17 @@ class BoustrophedonNode(Node):
             if time.time() - start > timeout:
                 raise RuntimeError('Timed out waiting for position estimate')
 
+    def _capture_home_position(self):
+        """Capture the drone's current local pose as mission home."""
+        p = self.current_pose.pose.position
+        self.home_x = float(p.x)
+        self.home_y = float(p.y)
+        self.home_z = float(p.z)
+        self.home_captured = True
+        self.get_logger().info(
+            f'Home captured at x={self.home_x:.2f}, y={self.home_y:.2f}, z={self.home_z:.2f}'
+        )
+
 
     def _set_mode(self, mode, retries=5):
         req = SetMode.Request()
@@ -192,7 +283,7 @@ class BoustrophedonNode(Node):
             raise RuntimeError('Takeoff command failed')
         self.get_logger().info(f'Taking off to {altitude}m...')
 
-    def _go_to(self, x, y, z, timeout=60):
+    def _go_to(self, x, y, z, timeout=60, respect_tracking=True):
         """Publish setpoint and wait until within WAYPOINT_TOL."""
         self.get_logger().info(f'→ Waypoint ({x:.1f}, {y:.1f}, {z:.1f})')
         sp = self._make_setpoint(x, y, z)
@@ -200,7 +291,9 @@ class BoustrophedonNode(Node):
         start = time.time()
 
         while True:
-            if self.tracking_active:
+            if self.rtl_commanded:
+                return
+            if respect_tracking and self.tracking_active:
                 return
             
             sp.header.stamp = self.get_clock().now().to_msg()
@@ -220,40 +313,59 @@ class BoustrophedonNode(Node):
         self._wait_connected()
         self._set_gp_origin()
         self._wait_for_position_estimate()
+        if not self.home_captured:
+            self._capture_home_position()
         self._set_mode('GUIDED')
         time.sleep(1.0)
         self._arm()
         time.sleep(1.0)
+
+        if self.return_home_only:
+            self.get_logger().info('Return-home mode active. Going to origin.')
+            self._go_to(self.home_x, self.home_y, CRUISE_ALT, timeout=60)
+            self.get_logger().info('Return-home complete.')
+            return
+
         self._takeoff(TAKEOFF_ALT)
 
         # Wait to reach takeoff altitude
         self.get_logger().info('Waiting to reach takeoff altitude...')
-        while self._distance_to(0.0, 0.0, TAKEOFF_ALT) > 0.5:
+        takeoff_wait_start = time.time()
+        while self._altitude_error(TAKEOFF_ALT) > 0.4:
             rclpy.spin_once(self, timeout_sec=0.2)
+            if time.time() - takeoff_wait_start > 25.0:
+                self.get_logger().warn('Timed out waiting for takeoff altitude; continuing.')
+                break
 
         # Generate and fly pattern
-        waypoints = generate_boustrophedon(AREA_WIDTH, AREA_HEIGHT, LANE_SPACING, CRUISE_ALT)
+        waypoints = generate_boustrophedon_bounds(X_MIN, X_MAX, Y_MIN, Y_MAX, LANE_SPACING, CRUISE_ALT)
         self.get_logger().info(
             f'Starting boustrophedon pattern: {len(waypoints)} waypoints, '
-            f'{AREA_WIDTH}m x {AREA_HEIGHT}m, {LANE_SPACING}m lane spacing'
+            f'x[{X_MIN},{X_MAX}] y[{Y_MIN},{Y_MAX}], lane spacing={LANE_SPACING}m'
         )
 
         for i, (x, y, z) in enumerate(waypoints):
             self.get_logger().info(f'[{i+1}/{len(waypoints)}]')
             self._go_to(x, y, z)
+            if self.rtl_commanded:
+                self._set_mode('RTL')
+                return
             if self.tracking_active:
                 break
 
         if self.tracking_active:
-            self.get_logger().info('Object found. Holding position...')
+            self._approach_target()
+            self.get_logger().info('Holding final position...')
             p = self.current_pose.pose.position
-            while rclpy.ok():
+            while rclpy.ok() and not self.rtl_commanded:
                 sp = self._make_setpoint(p.x, p.y, p.z)
                 self.setpoint_pub.publish(sp)
                 rclpy.spin_once(self, timeout_sec=0.05)
+            if self.rtl_commanded:
+                self._set_mode('RTL')
         else:
             self.get_logger().info('Pattern complete. Returning to launch...')
-            self._go_to(0.0, 0.0, CRUISE_ALT)
+            self._go_to(self.home_x, self.home_y, CRUISE_ALT)
             self._set_mode('RTL')
             self.get_logger().info('RTL initiated. Done.')
 

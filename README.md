@@ -1,59 +1,97 @@
-## Senior Project Autonomous Drone 
-### Note:
-* User should have ardupilot installed prior to cloning this repository
-* Ensure that paths match your own local setup eg for `worlds` , `models`, and sometimes even `textures` of the models:
-  `export GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH:/home/joanna/seniorproject_repo/ardupilot_gazebo/models`
-  then,
-  `source ~./bashrc `
-* Also, ensure that you have sourced your ROS2 installation
-* Necessary virtual environments have been created for mavproxy, the yolo and udp relay node within the `yolo_detector` package
+## Senior Project Autonomous Drone
 
 
-### Current Interface Setup Involves the following:
 
-#### 1. World
+## Prerequisites
+- Python environments for UI / YOLO dependencies (as used in your local setup)
 
-`gz sim -v4 -r iris_objects_runway.sdf`
 
-- Models imported: green and red coke can, mug
+```bash
+cd /home/$USER/Senior-Project-Autonomous-Drone
+python3 -m venv .venv-alt --system-site-packages
+source .venv-alt/bin/activate
+pip install --upgrade pip
+pip install "numpy<2" opencv-python==4.9.0.80 transformers accelerate timm ultralytics PyQt6 MAVProxy future
+```
 
-#### 2. Run camera bridge
+Helpful documentation:
+- ArduPilot Dev: https://ardupilot.org/dev/index.html
+- MAVProxy: https://ardupilot.org/mavproxy/index.html
+- Gazebo docs: https://gazebosim.org/docs/harmonic
+- ROS 2 docs: https://docs.ros.org/en/humble/index.html
 
-`ros2 run ros_gz_bridge parameter_bridge \
-"/world/iris_objects_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image@sensor_msgs/msg/Imag
-e[gz.msgs.Image" \
-"/world/iris_objects_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/camera_info@sensor_msgs/ms
-g/CameraInfo[gz.msgs.CameraInfo"`
+## One-Time Setup
 
-#### 3. Optional - run image view
+1) Export Gazebo resource/plugin paths (adjust for your machine):
 
- `ros2 run image_view image_view --ros-args --remap image:=/ultralytics/detection/image`
+```bash
+export GZ_SIM_SYSTEM_PLUGIN_PATH=/home/$USER/Senior-Project-Autonomous-Drone/ardupilot_gazebo/build:$GZ_SIM_SYSTEM_PLUGIN_PATH
+export GZ_SIM_RESOURCE_PATH=/home/$USER/Senior-Project-Autonomous-Drone/ardupilot_gazebo/models:/home/$USER/Senior-Project-Autonomous-Drone/ardupilot_gazebo/worlds:$GZ_SIM_RESOURCE_PATH
+```
 
-#### 4. Run yolo node
+2) Source ROS 2 and build/source ROS workspace:
 
-Ran in this directory
+```bash
+source /opt/ros/humble/setup.bash
+cd /home/$USER/Senior-Project-Autonomous-Drone/drone_rosws
+colcon build
+source install/setup.bash
+```
 
-`srproject_repo/sim/drone_rosws/src/yolo_detector/yolo_detector`
+## Run Flow (15x15 Walls + Path Planning)
 
-Command:
+Use separate terminals.
 
-`python3 yolo_node.py`
+### 1) Start Gazebo with the 15x15 wall world
 
-#### 5. Run ground station
+```bash
+cd /home/$USER/Senior-Project-Autonomous-Drone
+gz sim -v4 -r ardupilot_gazebo/worlds/iris_runway_15x15_walls.sdf
+```
 
-activate `ardupilot-venv`
+### 2) Start ArduPilot SITL
 
-Command:
+From your ArduPilot directory:
 
-`python ground_station.py`
+```bash
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --map --console
 
-#### 6. Run udp relay node ( companion_script)
+# In SITL, paste the following:
+output add 127.0.0.1:14550
+```
 
-activate `.venv` 
+### 3) Start ROS <-> Gazebo camera bridge
 
-Command:
+```bash
+ros2 run ros_gz_bridge parameter_bridge \
+"/world/iris_runway_15x15_walls/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image" \
+"/world/iris_runway_15x15_walls/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo"
+```
 
-`ros2 run yolo_detector udp_relay`
-or
-`python3 src/yolo_detector/yolo_detector/udp_relay.py` from `drone_rosws`
+### 4) Start mission and perception nodes in drone_rosws yolo_detector package
 
+```bash
+source /home/$USER/Senior-Project-Autonomous-Drone/.venv-alt/bin/activate
+python3 udp_relay.py
+```
+
+
+
+### 5) Start ground station
+
+For state-machine based tracking (`IDLE`, `TRACKING`, `FOUND`) that can trigger mission behavior:
+
+```bash
+source /home/$USER/Senior-Project-Autonomous-Drone/.venv-alt/bin/activate
+python3 GroundStation_sim.py
+```
+
+
+
+### 6) Run mavros
+
+
+```bash
+ros2 launch mavros apm.launch fcu_url:=udp://127.0.0.1:14550@
+
+```
