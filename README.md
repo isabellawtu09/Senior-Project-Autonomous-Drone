@@ -2,8 +2,9 @@
 
 ## About
 Operation of drone systems and their Integration with AI traditionally requires:
-Accessibility/knowledge in the UAV field
-Pre-trained models for every target 
+
+- Accessibility/knowledge in the UAV field
+- Pre-trained models for every target 
 
 ## Goal: Develop a user friendly interface which can be prompted with natural language for autonomous drone searching
 - Allow operator to define & deploy search mission with ease
