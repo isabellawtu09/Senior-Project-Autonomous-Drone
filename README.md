@@ -1,10 +1,22 @@
-## Senior Project Autonomous Drone
+## Natural Language Object Specification for Autonomous UAV Detection and Tracking
 
+## About
+Operation of drone systems and their Integration with AI traditionally requires:
+Accessibility/knowledge in the UAV field
+Pre-trained models for every target 
 
+## Goal: Develop a user friendly interface which can be prompted with natural language for autonomous drone searching
+- Allow operator to define & deploy search mission with ease
+- Targets can be described in plain text, no dataset collection or training needed
+
+## System
+We implemented an **Object detection Pipeline**:
+- **Brain** → OpenAI: Semantic and spatial reasoning
+- **Eyes** → Yolo World: CV model, real-time open-vocabulary detection
 
 ## Prerequisites
 - Python environments for UI / YOLO dependencies (as used in your local setup)
-
+- OpenAI API Key
 
 ```bash
 cd /home/$USER/Senior-Project-Autonomous-Drone
